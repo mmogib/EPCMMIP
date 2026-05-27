@@ -1,0 +1,35 @@
+# ── Claude Code / AI assistant artifacts ────────────────────────────────────
+CLAUDE.md
+claude.md
+.claude/
+.claude.json
+.claudeignore
+
+# ── Results: ignore contents but keep folder structure (via .gitkeep) ───────
+results/*
+!results/.gitkeep
+!results/logs/
+!results/figures/
+results/logs/*
+!results/logs/.gitkeep
+results/figures/*
+!results/figures/.gitkeep
+
+# ── Julia ───────────────────────────────────────────────────────────────────
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/deps.jl
+docs/build/
+docs/site/
+LocalPreferences.toml
+.CondaPkg/
+
+# ── OS / editor ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.vscode/
+.idea/
