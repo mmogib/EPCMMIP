@@ -1,29 +1,31 @@
-# types.jl — Core types for solver results and history tracking
+# types.jl — Core types for solver results and history tracking.
 #
 # Defines the data structures that ALL solvers return and that the DB layer
-# reads and writes. Keep types.jl and benchmark.jl in sync: if you add a field
-# to SolverResult, add the corresponding DB column too.
+# reads and writes. Keep types.jl and benchmark.jl in sync: adding a field
+# here means adding the corresponding DB column too.
 
 # ============================================================================
-# Iteration Record (for per-iteration history tracking)
+# Iteration Record (per-iteration history)
 # ============================================================================
 
 """
     IterRecord
 
-One row of per-iteration convergence data. Stored in `SolverResult.history`
-and bulk-inserted into the `history` DB table when `track=true`.
+One row of per-iteration convergence data. Pushed into `HistoryCallback.history`
+when a `HistoryCallback` is in the solver's observers tuple, then bulk-inserted
+into the `history` DB table after the solve completes.
+
+Carries BOTH residual forms per the B1 post-review decision: the stopping rule
+(`ResidualStopping`) picks one; the figure scripts can show either or both.
 """
 struct IterRecord
-    # ── Common fields ────────────────────────────────────────────────────
-    k::Int                      # iteration number
-    f_evals::Int                # cumulative function evaluations of B
-    elapsed::Float64            # cumulative wall-clock time (seconds)
+    k::Int                      # iteration number (1-based, fired at :iter)
+    f_evals::Int                # cumulative B-evaluations
+    elapsed::Float64            # cumulative wall-clock seconds since solve start
 
-    # ── Inclusion-problem tracking fields ────────────────────────────────
-    residual::Float64           # problem-specific residual: ||x_n - x*||,
-                                # ||x_{n+1} - x_n||, or 0.5||w_n - J^A(w_n - B w_n)||^2
-    step_size::Float64          # lambda_n / tau_n (adaptive step size)
+    residual::Float64           # R_n  = ||p_n - J^A_{ρ_n}(p_n - ρ_n B p_n)||
+    scaled_residual::Float64    # R̃_n = R_n / ρ_n  (natural-residual limit as ρ_n → 0)
+    step_size::Float64          # ρ_n / λ_n / τ_n  (method's current step)
 end
 
 # ============================================================================
@@ -33,28 +35,33 @@ end
 """
     SolverResult
 
-Returned by every solver. Common fields are required; project-specific fields
-are tailored to the monotone-inclusion comparison framework.
+Returned by every solver. The benchmark wrapper consumes this plus, optionally,
+the `value` field of a `NativeResRecorder` observer to obtain the native
+problem-specific residual for reporting.
 
-## Solver contract (see jcode/CLAUDE.md)
-Every solver function must:
-  1. Return a `SolverResult`
-  2. Accept `track::Bool=false` keyword (enable per-iteration history)
-  3. Accept `callback=nothing` keyword (live progress updates)
-     Callback signature: `callback(k::Int, metric::Float64, maxiter::Int)`
+## Solver contract (see jcode/CLAUDE.md + script_port_plan.md §5.1)
+Every `solve_X` in `algorithm.jl`:
+  1. Returns a `SolverResult`.
+  2. Signature `solve_X(prob, x0; stopping::Tuple, observers::Tuple=(), params...)`.
+  3. Declares `const X_VERSION` and `const X_PARAMS_BY_PROBLEM` (no Function values).
+  4. Records both `residual` and `scaled_residual` per iteration (state fields
+     + IterRecord fields). The stopping rule chooses one — driven by B1 pilot.
+  5. There is NO `track::Bool` kwarg. History is collected iff a
+     `HistoryCallback` is present in `observers`.
 """
 struct SolverResult
-    # ── Common fields (do not remove) ────────────────────────────────────
+    # ── Common fields ────────────────────────────────────────────────────
     converged::Bool
     iterations::Int
     f_evals::Int                # B-evaluations (single-valued operator)
     cpu_time::Float64
     x::Vector{Float64}          # final iterate
-    flag::Symbol                # :converged, :maxiter, :linesearch_failed, :error, ...
-    history::Vector{IterRecord} # empty if track=false
+    flag::Symbol                # one of :converged, :maxiter, :nan, :stagnation, :error
+    history::Vector{IterRecord} # empty unless a HistoryCallback was used
 
-    # ── Inclusion-problem fields ─────────────────────────────────────────
-    residual::Float64           # final residual (problem-dependent stopping quantity)
+    # ── Residuals at termination ─────────────────────────────────────────
+    residual::Float64           # R_n at termination
+    scaled_residual::Float64    # R̃_n at termination
 end
 
 # ============================================================================
@@ -62,7 +69,8 @@ end
 # ============================================================================
 
 """
-    make_result(; converged, iterations, f_evals, cpu_time, x, flag, history=[], residual=NaN)
+    make_result(; converged, iterations, f_evals, cpu_time, x, flag,
+                  history=IterRecord[], residual=NaN, scaled_residual=NaN)
 
 Keyword constructor for `SolverResult`. Use in error/catch paths to create a
 failed result without running the solver:
@@ -81,26 +89,29 @@ function make_result(;
         flag::Symbol,
         history::Vector{IterRecord} = IterRecord[],
         residual::Float64 = NaN,
+        scaled_residual::Float64 = NaN,
     )
     return SolverResult(
         converged, iterations, f_evals, cpu_time, x, flag, history,
-        residual,
+        residual, scaled_residual,
     )
 end
 
 # ============================================================================
-# Solver Version Constants (declare in each solver file)
+# Solver registry — see algorithm_types.jl
 # ============================================================================
 #
-# Every solver file must declare these two constants:
+# Each solver is a concrete subtype of `AbstractAlgorithm` defined in
+# `algorithm_types.jl` (Step 4.5). That file declares:
 #
-#   const {SOLVER}_VERSION  = "1.0.0"
-#   const {SOLVER}_DEFAULTS = (param1=val1, param2=val2, ...)
+#   - The struct (parameters as fields, `Float64` / `Symbol` only).
+#   - `<ALG>_PRESETS::Dict{Symbol,NamedTuple}` for `:P1, :P2, :P3` (per-problem
+#     tuned defaults, overwritten by `s25_promote_best_params.jl` after LHS)
+#     and `:paper` (source-paper defaults; used by `s28_validate_baselines.jl`).
+#   - `name(::Type{T})::String` and `version(::Type{T})::VersionNumber`.
 #
-# VERSION follows semver: bug fix → PATCH, logic change → MINOR.
-# DEFAULTS is the NamedTuple that is both hashed AND splatted to the solver.
-# Changing defaults does NOT require a version bump (params are in the hash).
-#
-# Example (to be filled in after discussion):
-#   const EPCM_VERSION  = "1.0.0"
-#   const EPCM_DEFAULTS = (lambda0=1.0, mu=0.5, alpha_n = n -> 1.0/(n+1))
+# `algorithm.jl` (Steps 7, 10) holds only the `solve` method bodies. The hash
+# `make_config_hash(alg::AbstractAlgorithm, prob_id, eps, maxiter)` pulls
+# `name(typeof(alg))`, `string(version(typeof(alg)))`, and per-field values
+# via `fieldnames` + `getfield`. Version bumps OR field-value changes
+# produce a different hash → fresh DB rows; old runs preserve historical state.

@@ -1,0 +1,53 @@
+# resolvents.jl — Closed-form resolvent helpers for the three test problems.
+#
+# Each problem's set-valued operator A has a known closed-form resolvent
+# J^A_ρ(x) = (I + ρ A)^{-1}(x). The helpers below implement those:
+#
+#   - `clipping_box`        — for P1 (A = N_{[-2,5]^m}) and P3 (A = N_{[-1,1]^K})
+#   - `soft_thresholding`   — for P2 (A = ∂‖·‖_1)
+#
+# These are pure, allocating functions. They are called by problem builders in
+# `problems.jl` to construct `prob.resolvent_A` closures with the
+# problem-specific (lo, hi) or (∂‖·‖_1, ρ) baked in. Solvers do not call
+# them directly — solvers call `prob.resolvent_A(x, ρ)`.
+
+"""
+    clipping_box(x::AbstractVector{Float64}, lo::Real, hi::Real) -> Vector{Float64}
+
+Componentwise projection of `x` onto the box `[lo, hi]^n`. Equivalent to the
+resolvent `J^A_ρ(x)` for `A = N_{[lo,hi]^n}` — note that the normal-cone
+resolvent is **independent of the step size `ρ`**, so the problem builder
+discards `ρ` when wiring this through `prob.resolvent_A`.
+
+Allocating; returns a fresh `Vector{Float64}`.
+
+Used for:
+- **P3** (Izuchukwu2023 Ex 6.2): `clipping_box(z, -1.0, 1.0)`.
+  (P1 was the box-VIP Ex 5.1 before the 2026-05-28 suite revision; it is now the
+  Volterra SFP Ex 5.2, whose half-space resolvent is built inline in `problems.jl`.)
+"""
+function clipping_box(x::AbstractVector{Float64}, lo::Real, hi::Real)
+    lo <= hi || throw(ArgumentError("clipping_box requires lo <= hi, got lo=$lo, hi=$hi"))
+    return clamp.(x, convert(Float64, lo), convert(Float64, hi))
+end
+
+"""
+    soft_thresholding(x::AbstractVector{Float64}, threshold::Real) -> Vector{Float64}
+
+Componentwise soft-thresholding: `sign(x_i) * max(|x_i| - threshold, 0)`.
+
+This is the resolvent `J^A_ρ(x)` for `A = ∂‖·‖_1` with `threshold = ρ`. The
+problem builder for P2 wires it as `prob.resolvent_A = (x, ρ) -> soft_thresholding(x, ρ)`,
+so the step size flows through as the threshold.
+
+Allocating; returns a fresh `Vector{Float64}`. Componentwise output is `0.0`
+exactly when `|x_i| <= threshold`.
+
+Used for:
+- **P2** (Yao2024 Ex 4.2): `soft_thresholding(x, ρ)`.
+"""
+function soft_thresholding(x::AbstractVector{Float64}, threshold::Real)
+    threshold >= 0 || throw(ArgumentError("soft_thresholding requires threshold >= 0, got $threshold"))
+    t = convert(Float64, threshold)
+    return sign.(x) .* max.(abs.(x) .- t, 0.0)
+end
