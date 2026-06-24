@@ -287,12 +287,15 @@ end
 # Problem 3: Izuchukwu2023 Example 6.2 — optimal-control problem
 # ============================================================================
 #
-# Control-only iterate z ∈ ℝ^K, K = 100, h = 2/K = 0.02 (per Q6a).
+# Control-only iterate z ∈ ℝ^K, where K = number of Euler nodes on t ∈ [0,2]
+# (the problem DIMENSION; default 100), h = 2/K. Refining the mesh (larger K)
+# discretises the SAME continuous control problem at higher resolution.
 # Inclusion form 0 ∈ A(z) + B(z) with:
 #   - A = N_{[-1,1]^K}            (resolvent = clip to [-1, 1], ρ-indep)
 #   - B(z) = M z + c              (affine, per script_port_plan.md §5.6)
 #
-# M has all entries 2h (rank-1, ‖M‖_2 = 2hK = 4 for K=100, h=0.02).
+# M has all entries 2h (rank-1, ‖M‖_2 = 2hK = 4 for ALL K — Lipschitz is
+# K-INVARIANT, so step sizes stay comparable across dimensions).
 # c_j = -h(K - j) for j = 0, …, K-1 (0-indexed; using the manuscript's
 # continuous-co-state convention — see plan note for the alternative
 # direct-chain-rule form; both give the same bang-bang exact solution).
@@ -301,24 +304,29 @@ end
 # computes `Mz` as `(2h · sum(z)) .* 1`, a rank-1 product, then adds c.
 # Memory: stores only the K-vector c (plus the scalar 2h).
 #
-# Exact bang-bang: z*_j = +1 for j ∈ {0..59}, −1 for j ∈ {60..99}
-# (switch index j = 60 corresponds to continuous-time t = 1.2).
+# Exact bang-bang: z*_j = +1 for j < round(0.6K), −1 after (switch at
+# continuous-time t = 1.2 ⟹ node index 0.6K; = 60 at K=100).
+#
+# NOTE on the native residual Tol_n = 0.5‖z−clip(z−Bz)‖²: it is an UN-normalised
+# squared sum over K nodes, so at larger K the fixed 1e-6 bar is effectively
+# stricter per-node ⟹ iteration counts rise with K. This keeps the K=100 cell
+# identical to the source; divide by K if a K-invariant bar is wanted instead.
 
 """
-    _build_problem3(; n_seeds::Int=20) -> TestProblem
+    _build_problem3(dim::Int = 0; n_seeds::Int=20) -> TestProblem
 
-Build P3 at the fixed `K = 100` discretisation. Affine `B(z) = Mz + c` is
-implemented via a rank-1 closure (no dense matrix). `n_seeds` initial points
-sampled uniformly on `[-1, 1]^K`.
-
-`n_seeds` defaults to **20** (per Q5 post-review bump — P3 has only one dim,
-so we boost the seed count to keep the performance profile less noisy).
+Build P3 (optimal control) at the `K = dim` Euler discretisation (`dim ≤ 0`
+defaults to the source `K = 100`; `K ≥ 10` required). Affine `B(z) = Mz + c` is
+implemented via a rank-1 closure (no dense matrix); `n_seeds` initial points
+sampled uniformly on `[-1, 1]^K`. `K` IS the problem dimension — refining the
+time mesh raises it (same continuous control problem at higher resolution).
 """
-function _build_problem3(; n_seeds::Int=20)
+function _build_problem3(dim::Int = 0; n_seeds::Int=20)
     n_seeds >= 1 || throw(ArgumentError("_build_problem3: n_seeds must be >= 1, got $n_seeds"))
 
-    K = 100
-    h = 2.0 / K                                                # = 0.02
+    K = dim <= 0 ? 100 : dim                                   # K = Euler nodes (dim); default 100
+    K >= 10 || throw(ArgumentError("_build_problem3: K (dim) must be >= 10, got $K"))
+    h = 2.0 / K                                                # mesh = 0.02 at K=100
     dim = K
 
     # --- Affine B(z) = M z + c, rank-1 M, c per manuscript convention ---
@@ -344,8 +352,9 @@ function _build_problem3(; n_seeds::Int=20)
         end
     end
 
-    # Exact bang-bang: z*_j = +1 for j ∈ {0..59}, −1 for j ∈ {60..99}
-    exact_z = vcat(fill(1.0, 60), fill(-1.0, 40))
+    # Exact bang-bang: switch at t=1.2 ⟹ node index 0.6K (= 60 at K=100)
+    switch = round(Int, 0.6 * K)
+    exact_z = vcat(fill(1.0, switch), fill(-1.0, K - switch))
 
     # --- Initial points: n_seeds uniform draws on [-1, 1]^K (Q5 post-review) ---
     initial_points = InitialPoint[]
@@ -455,7 +464,7 @@ at the given dimension.
 
 - **P1** (Volterra SFP): `dim = N` is the grid resolution (`dim ≥ 2`).
 - **P2** (ℓ1+quad): `dim = m ≥ 1`.
-- **P3** (optimal control): `dim` is ignored — fixes `K = 100`.
+- **P3** (optimal control): `dim = K` Euler nodes (`dim ≥ 10`; `0` ⇒ `K = 100`).
 - **P4** (LASSO): `dim = N` is the signal length (`dim ≥ 4`); `M = N÷2`.
 
 `n_seeds` controls the number of generated initial points. The default
@@ -470,7 +479,7 @@ bitwise-identical problems across Julia sessions (Julia version permitting —
 function get_problem(id::Int; dim::Int = 0, n_seeds::Int = (id == 3 ? 20 : 10))
     id == 1 && return _build_problem1(dim; n_seeds=n_seeds)
     id == 2 && return _build_problem2(dim; n_seeds=n_seeds)
-    id == 3 && return _build_problem3(; n_seeds=n_seeds)
+    id == 3 && return _build_problem3(dim; n_seeds=n_seeds)
     id == 4 && return _build_problem4(dim; n_seeds=n_seeds)
     throw(ArgumentError("Unknown problem id: $id. Known: $PROBLEM_IDS"))
 end

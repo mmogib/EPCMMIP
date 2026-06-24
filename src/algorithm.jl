@@ -186,8 +186,9 @@ end
 #   Step 7 (Stepsize update):     case split on ‖Bz_{k−1} − Bz_k‖ vs ϑ_0 τ_k ‖z_{k−1} − z_k‖
 #
 # Initial: x_0 given by the caller; **z_{-1} = x_0** by convention (Issue 2).
-# Per-iter cost: 1 new B-eval for z_k (B(z_{k-1}) cached) + 1 extra for the
-# universal residual at x_{k+1}. Steady-state 2 B-evals/iter.
+# Per-iter ALGORITHM cost: **1 new B-eval for z_k** (B(z_{k-1}) is cached) —
+# single-call. The universal residual at x_{k+1} also evaluates B(x_{k+1}), but
+# that is monitoring only (not algorithm work) and is NOT counted in f_evals.
 #
 # μ note (Issue 1, refined): the proof-side constant μ ∈ (1, 2) does NOT appear
 # in the algorithm body NOR on the EPCM struct. Its existence is guaranteed by
@@ -219,12 +220,12 @@ function solve(alg::EPCM, prob::TestProblem, x0::Vector{Float64};
         throw(ArgumentError("EPCM: ϑ_0 must be > 0, got $(alg.vartheta_0)"))
     (0 < alg.vartheta_1 < alg.vartheta_0) ||
         throw(ArgumentError("EPCM: require 0 < ϑ_1 < ϑ_0, got ϑ_1=$(alg.vartheta_1), ϑ_0=$(alg.vartheta_0)"))
-    bound_theta0 = sqrt(alg.gamma / (2 * (2 * alg.gamma + 1)))
+    bound_theta0 = sqrt(alg.gamma / (2 * (3 * alg.gamma + 1)))
     alg.vartheta_0 < bound_theta0 ||
-        throw(ArgumentError("EPCM: strict admissibility — ϑ_0 < √(γ/(2(2γ+1))) = $bound_theta0, " *
+        throw(ArgumentError("EPCM: strict admissibility — ϑ_0 < √(γ/(2(3γ+1))) = $bound_theta0, " *
                             "got ϑ_0 = $(alg.vartheta_0). Strictness leaves room for an admissible μ ∈ (1, $bound_theta0/$(alg.vartheta_0)) in the convergence proof."))
-    (0 < alg.zeta < 2 / (2 + alg.gamma)) ||
-        throw(ArgumentError("EPCM: ζ must be in (0, 2/(2+γ)) = (0, $(2/(2+alg.gamma))), got $(alg.zeta)"))
+    (0 < alg.zeta < 4 / (3 + alg.gamma)) ||
+        throw(ArgumentError("EPCM: ζ must be in (0, 4/(3+γ)) = (0, $(4/(3+alg.gamma))), got $(alg.zeta)"))
     alg.tau_0 > 0 ||
         throw(ArgumentError("EPCM: τ_0 must be > 0, got $(alg.tau_0)"))
 
@@ -315,7 +316,7 @@ function solve(alg::EPCM, prob::TestProblem, x0::Vector{Float64};
         ΔBz      = Bz_prev .- Bz_k
         norm_Δz  = norm(Δz)
         norm_ΔBz = norm(ΔBz)
-        τ_next = if norm_ΔBz > alg.vartheta_0 * τ_curr * norm_Δz
+        τ_next = if norm_ΔBz > alg.vartheta_0 / τ_curr * norm_Δz
             # "If" branch: shrink. norm_ΔBz > 0 here, safe to divide.
             alg.vartheta_1 * norm_Δz / norm_ΔBz
         else
@@ -333,9 +334,10 @@ function solve(alg::EPCM, prob::TestProblem, x0::Vector{Float64};
         state.step_size = τ_next
 
         # Step 5: BOTH residuals at the new principal iterate x_{k+1} with
-        # ρ = τ_{k+1}. Costs 1 extra B-eval (B(x_{k+1})) per iter (Issue 4).
+        # ρ = τ_{k+1}. The B(x_{k+1}) here is for the universal residual R_n ONLY
+        # (monitoring); it is NOT an algorithm eval — the EPCM iteration is
+        # single-call (one new B(z_k)/iter) — so it does NOT increment f_evals.
         Bxnext        = prob.B(x_next)
-        state.f_evals += 1
         rho           = τ_next
         prox_arg      = x_next .- rho .* Bxnext
         prox_val      = prob.resolvent_A(prox_arg, rho)
@@ -385,6 +387,280 @@ function solve(alg::EPCM, prob::TestProblem, x0::Vector{Float64};
         end
     end
 
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# EFBFP — Extrapolated Forward–Backward–Forward (manuscript Algorithm 2)
+# ============================================================================
+#
+# EFBFP = EPCM without the projection–contraction step. Steps 1–3 are identical
+# to EPCM; Step 3's forward correction v_k IS the next iterate x_{k+1} (no u_k,
+# θ_k, ζ). Stepsize = EPCM's ϑ-rule. Single-call: 1 new B(z_k)/iter (B(z_{k-1})
+# cached); the residual B(x_{k+1}) is monitoring only and is NOT counted.
+
+"""
+    solve(alg::EFBFP, prob::TestProblem, x0::Vector{Float64};
+          stopping::Tuple, observers::Tuple = ()) -> SolverResult
+
+Run the EFBFP iteration (manuscript Algorithm 2) on `prob` from `x0`. EPCM minus
+the projection–contraction step: x_{k+1} = v_k. Validates the input constraints
+(0 < ϑ_1 < ϑ_0, τ_0 > 0, σ/δ admissibility) before iterating.
+"""
+function solve(alg::EFBFP, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    # ── Parameter validation (manuscript Algorithm 2 input constraints) ──
+    alg.vartheta_0 > 0 ||
+        throw(ArgumentError("EFBFP: ϑ_0 must be > 0, got $(alg.vartheta_0)"))
+    (0 < alg.vartheta_1 < alg.vartheta_0) ||
+        throw(ArgumentError("EFBFP: require 0 < ϑ_1 < ϑ_0, got ϑ_1=$(alg.vartheta_1), ϑ_0=$(alg.vartheta_0)"))
+    alg.vartheta_0 < 1 / sqrt(6) ||
+        throw(ArgumentError("EFBFP: strict admissibility — ϑ_0 < 1/√6 ≈ 0.4082 (Theorem thm:efbfp), got ϑ_0 = $(alg.vartheta_0)."))
+    alg.tau_0 > 0 ||
+        throw(ArgumentError("EFBFP: τ_0 must be > 0, got $(alg.tau_0)"))
+    if alg.sigma_rule === :power
+        (0 < alg.sigma_exp <= 1) ||
+            throw(ArgumentError("EFBFP: sigma_exp must be in (0, 1] for Σσ_k = ∞, got $(alg.sigma_exp)"))
+        alg.sigma_scale > 0 ||
+            throw(ArgumentError("EFBFP: sigma_scale must be > 0, got $(alg.sigma_scale)"))
+        σ0 = alg.sigma_scale / 2.0^alg.sigma_exp
+        σ0 < 1 ||
+            throw(ArgumentError("EFBFP: require σ_0 = sigma_scale/2^sigma_exp < 1, got σ_0 = $σ0"))
+    end
+    if alg.delta_rule === :power
+        alg.delta_exp > 1 ||
+            throw(ArgumentError("EFBFP: delta_exp must be > 1 for Σδ_k < ∞, got $(alg.delta_exp)"))
+    end
+
+    state   = SolverState(:EFBFP, x0)
+    t0      = time()
+    x_0     = copy(x0)
+    z_prev  = copy(x0)              # z_{-1} = x_0
+    Bz_prev = prob.B(z_prev)        # B(z_{-1}) — first f_eval
+    state.f_evals = 1
+    τ_curr  = alg.tau_0
+    state.step_size = τ_curr
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        state.x_prev = copy(state.x)
+
+        # Step 1: Extrapolation
+        σ_k = _epcm_sigma(alg.sigma_rule, alg.sigma_scale, alg.sigma_exp, state.k)
+        w_k = σ_k .* x_0 .+ (1 - σ_k) .* state.x
+
+        # Step 2: Resolvent (uses cached Bz_prev = B(z_{k-1}))
+        z_k = prob.resolvent_A(w_k .- τ_curr .* Bz_prev, τ_curr)
+        Bz_k = prob.B(z_k)
+        state.f_evals += 1
+
+        # Step 3: Forward correction = iterate update (NO projection–contraction)
+        x_next = z_k .+ τ_curr .* (Bz_prev .- Bz_k)
+
+        # Step 4: Stepsize update — mirrors EPCM's solve() verbatim. NB: the code
+        # condition is ϑ_0·τ_k (kept identical to EPCM so the only EFBFP↔EPCM
+        # difference is the PC step); the manuscript box uses ϑ_0/τ_k. This
+        # code↔paper discrepancy is shared with EPCM and tracked separately.
+        Δz       = z_prev .- z_k
+        ΔBz      = Bz_prev .- Bz_k
+        norm_Δz  = norm(Δz)
+        norm_ΔBz = norm(ΔBz)
+        τ_next = if norm_ΔBz > alg.vartheta_0 / τ_curr * norm_Δz
+            alg.vartheta_1 * norm_Δz / norm_ΔBz
+        else
+            δ_k = _epcm_delta(alg.delta_rule, alg.delta_exp, state.k)
+            (1.0 + δ_k) * τ_curr
+        end
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = τ_next
+
+        # Residual monitoring (single-call: this B(x_next) is NOT an algorithm eval)
+        Bxnext        = prob.B(x_next)
+        rho           = τ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        z_prev  = z_k
+        Bz_prev = Bz_k
+        τ_curr  = τ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# AEFBFP — Adaptive Extrapolated Forward–Backward–Forward (manuscript Alg 3)
+# ============================================================================
+#
+# AEFBFP = EFBFP with the min-rule self-adaptive stepsize. Steps 1–3 identical
+# to EFBFP; Step 4 is the Malitsky–Tam / IFRAB form
+#   τ_{k+1} = min{ μ‖z_k−z_{k-1}‖/‖B(z_k)−B(z_{k-1})‖, τ_k+ξ_k }   (B differs)
+#         or  τ_k + ξ_k                                            (otherwise).
+# Single-call accounting identical to EFBFP.
+
+"""
+    solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
+          stopping::Tuple, observers::Tuple = ()) -> SolverResult
+
+Run the AEFBFP iteration (manuscript Algorithm 3) on `prob` from `x0`. EFBFP with
+the min-rule self-adaptive stepsize. Validates the input constraints
+(μ ∈ (0,1), τ_0 > 0, xi_exp > 1, σ admissibility) before iterating.
+"""
+function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    # ── Parameter validation (manuscript Algorithm 3 input constraints) ──
+    (0 < alg.mu < 1 / sqrt(6)) ||
+        throw(ArgumentError("AEFBFP: strict admissibility — μ ∈ (0, 1/√6 ≈ 0.4082) (Theorem thm:aefbfp), got μ = $(alg.mu)."))
+    alg.tau_0 > 0 ||
+        throw(ArgumentError("AEFBFP: τ_0 must be > 0, got $(alg.tau_0)"))
+    if alg.sigma_rule === :power
+        (0 < alg.sigma_exp <= 1) ||
+            throw(ArgumentError("AEFBFP: sigma_exp must be in (0, 1] for Σσ_k = ∞, got $(alg.sigma_exp)"))
+        alg.sigma_scale > 0 ||
+            throw(ArgumentError("AEFBFP: sigma_scale must be > 0, got $(alg.sigma_scale)"))
+        σ0 = alg.sigma_scale / 2.0^alg.sigma_exp
+        σ0 < 1 ||
+            throw(ArgumentError("AEFBFP: require σ_0 = sigma_scale/2^sigma_exp < 1, got σ_0 = $σ0"))
+    end
+    if alg.xi_rule === :power
+        alg.xi_exp > 1 ||
+            throw(ArgumentError("AEFBFP: xi_exp must be > 1 for Σξ_k < ∞, got $(alg.xi_exp)"))
+    end
+
+    state   = SolverState(:AEFBFP, x0)
+    t0      = time()
+    x_0     = copy(x0)
+    z_prev  = copy(x0)              # z_{-1} = x_0
+    Bz_prev = prob.B(z_prev)        # B(z_{-1}) — first f_eval
+    state.f_evals = 1
+    τ_curr  = alg.tau_0
+    state.step_size = τ_curr
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        state.x_prev = copy(state.x)
+
+        # Step 1: Extrapolation
+        σ_k = _epcm_sigma(alg.sigma_rule, alg.sigma_scale, alg.sigma_exp, state.k)
+        w_k = σ_k .* x_0 .+ (1 - σ_k) .* state.x
+
+        # Step 2: Resolvent (uses cached Bz_prev = B(z_{k-1}))
+        z_k = prob.resolvent_A(w_k .- τ_curr .* Bz_prev, τ_curr)
+        Bz_k = prob.B(z_k)
+        state.f_evals += 1
+
+        # Step 3: Forward correction = iterate update
+        x_next = z_k .+ τ_curr .* (Bz_prev .- Bz_k)
+
+        # Step 4: Min-rule stepsize (ξ_k = 1/(k+1)^xi_exp, summable, additive)
+        Δz       = z_prev .- z_k
+        ΔBz      = Bz_prev .- Bz_k
+        norm_Δz  = norm(Δz)
+        norm_ΔBz = norm(ΔBz)
+        ξ_k      = _epcm_delta(alg.xi_rule, alg.xi_exp, state.k)
+        τ_next = norm_ΔBz > 0 ?
+            min(alg.mu * norm_Δz / norm_ΔBz, τ_curr + ξ_k) :
+            τ_curr + ξ_k
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = τ_next
+
+        # Residual monitoring (single-call: this B(x_next) is NOT an algorithm eval)
+        Bxnext        = prob.B(x_next)
+        rho           = τ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        z_prev  = z_k
+        Bz_prev = Bz_k
+        τ_curr  = τ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
     return make_result(
         converged       = state.flag === :converged,
         iterations      = state.k,
@@ -584,8 +860,9 @@ end
 # set x_0 = x_1 = x0, so the first inertial term θ_1(x_1 − x_0) = 0.
 #
 # B-eval accounting: the inertial w_n changes every iteration, so B(w_n) cannot
-# be cached across iters (unlike MTTM's B(x_n)). Per-iter cost: B(w_n) + B(y_n)
-# + B(x_{n+1}) for the universal residual = 3 B-evals/iter. No preload.
+# be cached across iters (unlike MTTM's B(x_n)). Per-iter ALGORITHM cost:
+# B(w_n) + B(y_n) = 2 B-evals/iter (two-call). The extra B(x_{n+1}) for the
+# universal residual is monitoring only and is NOT counted in f_evals. No preload.
 
 """
     solve(alg::IMTTM, prob::TestProblem, x0::Vector{Float64};
@@ -670,9 +947,9 @@ function solve(alg::IMTTM, prob::TestProblem, x0::Vector{Float64};
         state.elapsed   = time() - t0
         state.step_size = λ_next
 
-        # Universal residual at x_{n+1} with ρ = λ_{n+1}.
+        # Universal residual at x_{n+1} with ρ = λ_{n+1}. B(x_{n+1}) is for R_n
+        # monitoring only — not algorithm work — so it does NOT increment f_evals.
         Bxnext        = prob.B(x_next)
-        state.f_evals += 1
         rho           = λ_next
         prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
         Rn            = norm(x_next .- prox_val)

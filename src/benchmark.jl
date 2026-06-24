@@ -44,9 +44,9 @@ const RECOGNISED_FLAGS = Set([:converged, :maxiter, :nan, :stagnation, :error])
 # ============================================================================
 #
 # The universal stopping rule is R_n < eps; N_max is the shared safety/budget
-# cap (uniform across methods for a given (problem, eps) — fairness). The cap
-# is calibrated to the manuscript values at the reference tolerance eps = 1e-6
-# (N_max = 3000 for P1/P2, 1000 for P3; script_port_plan.md Q2) and scales as
+# cap (uniform across methods for a given (problem, eps) — fairness). It is now
+# UNIFORM across the suite: N_max = 6000 for every problem at the reference
+# tolerance eps = 1e-6, and scales as
 # log10(1/eps): under strong monotonicity (P1, P2) these methods converge
 # linearly, so iterations-to-eps ∝ log(1/eps), making log-scaling the right
 # law. P3 (rank-1 M, only monotone) may be sublinear — watch s10 for systematic
@@ -55,21 +55,23 @@ const RECOGNISED_FLAGS = Set([:converged, :maxiter, :nan, :stagnation, :error])
 "Reference tolerance at which `NMAX_REF` is calibrated."
 const EPS_REF = 1.0e-6
 
-"Iteration-budget cap per problem at `EPS_REF` (suite revised 2026-05-28)."
-const NMAX_REF = Dict("P1" => 3000, "P2" => 3000, "P3" => 1000, "P4" => 3000)
+"Iteration-budget cap, UNIFORM across the suite: 6000 at `EPS_REF` (=1e-6) for every problem.
+(P4's singular LASSO needs ~3500–4000 iters at 1e-6; the others finish far sooner — 6000 is a safe common cap.)"
+const NMAX_REF = Dict("P1" => 6000, "P2" => 6000, "P3" => 6000, "P4" => 6000)
 
 """
-Native (source-paper) stopping thresholds per problem — the PRIMARY convergence
-criterion (D1 decision 2026-05-28, supersedes the universal R_n<1e-6 rule):
-  - P1 (Volterra SFP, Tan2022a):  E_n = ‖(I−P_C)x‖²+‖B(x)‖² < 1e-5
-  - P2 (ℓ1+quad, Yao2024):        ‖x_{k+1}−x_k‖ < 1e-6
+Native (source-paper) stopping QUANTITY per problem, at a UNIFORM threshold 1e-6
+across the whole suite (D1 decision; supersedes the universal R_n rule). The
+quantity differs per problem, but the bar — and the budget below — are the same:
+  - P1 (Volterra SFP, Tan2022a):  E_n = ‖(I−P_C)x‖²+‖B(x)‖²  < 1e-6
+  - P2 (ℓ1+quad, Yao2024):        ‖x_{k+1}−x_k‖              < 1e-6
   - P3 (control, Izuchukwu2023):  Tol_n = 0.5‖z−clip(z−Bz)‖² < 1e-6
-  - P4 (LASSO, Tan2022a):         ‖x_{k+1}−x_k‖ < 1e-6
+  - P4 (LASSO, Tan2022a):         ‖x_{k+1}−x_k‖              < 1e-6
 Each problem's `native_residual` closure computes the corresponding quantity;
 scripts stop on `NativeResStopping(prob.native_residual, NATIVE_TOL[prob])` and
 still RECORD R_n/R̃_n as secondary columns.
 """
-const NATIVE_TOL = Dict("P1" => 1.0e-5, "P2" => 1.0e-6, "P3" => 1.0e-6, "P4" => 1.0e-6)
+const NATIVE_TOL = Dict("P1" => 1.0e-6, "P2" => 1.0e-6, "P3" => 1.0e-6, "P4" => 1.0e-6)
 
 """
     native_tol(problem::AbstractString) -> Float64
@@ -95,6 +97,47 @@ function universal_maxiter(problem::AbstractString, eps::Float64)
         throw(ArgumentError("universal_maxiter: unknown problem '$problem'; known: $(join(sort(collect(keys(NMAX_REF))), ", "))"))
     eps > 0 || throw(ArgumentError("universal_maxiter: eps must be > 0, got $eps"))
     return round(Int, NMAX_REF[problem] * (log10(1 / eps) / log10(1 / EPS_REF)))
+end
+
+"""
+    is_canonical(problem, eps, maxiter) -> Bool
+
+True iff `(eps, maxiter)` is the CANONICAL config for `problem` — its native
+tolerance and the tolerance-aware budget. Paper-facing summaries filter on this
+so `--eps`/`--maxiter` override rows (distinct config_hashes living in the same
+production tier) never pollute the canonical aggregates.
+"""
+function is_canonical(problem::AbstractString, eps::Real, maxiter::Integer)
+    ceps = native_tol(problem)
+    isapprox(float(eps), ceps; rtol = 1e-9) && maxiter == universal_maxiter(problem, ceps)
+end
+
+"""
+    current_canonical_configs(db; production=true) -> Set{String}
+
+Config_hashes of the CURRENT tuned config of every (method, problem): the canonical
+config with the LATEST creation time in the given production tier. Reports pin to this
+set so stale configs from earlier tuning rounds (which still satisfy `is_canonical` —
+a re-tune that picks a new winner leaves the old config's production rows behind) are
+not double-counted in the k/n denominators.
+"""
+function current_canonical_configs(db; production::Bool = true)
+    df = DBInterface.execute(db, """
+        SELECT c.method AS method, r.problem AS problem, r.config_hash AS hash,
+               c.eps AS eps, c.maxiter AS maxiter, c.created_at AS created_at
+        FROM results r JOIN configs c ON r.config_hash = c.config_hash
+        WHERE r.script='s30' AND r.production=?
+        GROUP BY c.method, r.problem, r.config_hash
+    """, (production ? 1 : 0,)) |> DataFrame
+    latest = Dict{Tuple{String,String},Tuple{String,String}}()   # (m,P) => (created_at, hash)
+    for row in eachrow(df)
+        is_canonical(row.problem, row.eps, row.maxiter) || continue
+        k = (row.method, row.problem)
+        if !haskey(latest, k) || row.created_at > latest[k][1]
+            latest[k] = (row.created_at, row.hash)
+        end
+    end
+    return Set(v[2] for v in values(latest))
 end
 
 # ============================================================================
@@ -130,7 +173,10 @@ function _create_tables!(db)
         )
     """)
 
-    # ─── results: one row per (script, config, problem, dim, init) ──────────
+    # ─── results: one row per (script, config, problem, dim, init, production) ──
+    #     production: 1 = full benchmark run (paper data); 0 = --quick / dev / tuning.
+    #     It is part of the PK so quick and full rows coexist and never clobber
+    #     each other (INSERT OR REPLACE only replaces within the same tier).
     DBInterface.execute(db, """
         CREATE TABLE IF NOT EXISTS results (
             script           TEXT NOT NULL DEFAULT 's30',
@@ -148,8 +194,9 @@ function _create_tables!(db)
             residual         REAL,
             scaled_residual  REAL,
             native_residual  REAL,
+            production       INTEGER NOT NULL DEFAULT 0,
             created_at       TEXT NOT NULL,
-            PRIMARY KEY (script, config_hash, problem, dimension, init_point),
+            PRIMARY KEY (script, config_hash, problem, dimension, init_point, production),
             FOREIGN KEY (config_hash) REFERENCES configs(config_hash)
         )
     """)
@@ -163,15 +210,16 @@ function _create_tables!(db)
             dimension        INTEGER NOT NULL,
             init_point       TEXT NOT NULL,
             seed_idx         INTEGER NOT NULL,
+            production       INTEGER NOT NULL DEFAULT 0,
             k                INTEGER NOT NULL,
             f_evals          INTEGER,
             elapsed          REAL,
             residual         REAL,
             scaled_residual  REAL,
             step_size        REAL,
-            PRIMARY KEY (script, config_hash, problem, dimension, init_point, k),
-            FOREIGN KEY (script, config_hash, problem, dimension, init_point)
-                REFERENCES results(script, config_hash, problem, dimension, init_point)
+            PRIMARY KEY (script, config_hash, problem, dimension, init_point, production, k),
+            FOREIGN KEY (script, config_hash, problem, dimension, init_point, production)
+                REFERENCES results(script, config_hash, problem, dimension, init_point, production)
         )
     """)
 end
@@ -291,24 +339,33 @@ end
 # ============================================================================
 
 """
-    is_done(db, hash, problem, dim, init; script="s30") -> Bool
+    is_done(db, hash, problem, dim, init; script="s30", production=nothing) -> Bool
 
-Check if a result row exists for this (script, config, problem, dim, init)
-combination. The `script` keyword filters by the discriminator column (so
-an s10 OAT run with the same config_hash does NOT count as a completed
-s30 benchmark run, and vice versa).
+Check if a result row exists. `script` filters by the discriminator column (so an
+s10 OAT run does NOT count as a completed s30 run). `production` filters the
+production tier: `true`/`false` restrict to that tier (so a `--quick` row,
+production=0, does NOT count as a completed full/production run, and vice versa —
+the two tiers never block each other); `nothing` (default) matches either tier,
+preserving the pre-production-field behaviour for callers that don't care.
 """
 function is_done(db, hash::String, problem::AbstractString, dim::Int,
-                 init::AbstractString; script::AbstractString="s30")
-    r = DBInterface.execute(db,
-        "SELECT 1 FROM results WHERE script=? AND config_hash=? AND problem=? AND dimension=? AND init_point=?",
-        (script, hash, problem, dim, init)) |> DataFrame
+                 init::AbstractString; script::AbstractString="s30",
+                 production::Union{Nothing,Bool}=nothing)
+    r = if production === nothing
+        DBInterface.execute(db,
+            "SELECT 1 FROM results WHERE script=? AND config_hash=? AND problem=? AND dimension=? AND init_point=?",
+            (script, hash, problem, dim, init))
+    else
+        DBInterface.execute(db,
+            "SELECT 1 FROM results WHERE script=? AND config_hash=? AND problem=? AND dimension=? AND init_point=? AND production=?",
+            (script, hash, problem, dim, init, production ? 1 : 0))
+    end |> DataFrame
     return nrow(r) > 0
 end
 
 """
     insert_result!(db, hash, problem, dim, init, seed_idx, run_id, result;
-                   script="s30", native_residual=NaN)
+                   script="s30", native_residual=NaN, production=false)
 
 Insert (or replace) a result row. `result` must be a `SolverResult` (carries
 `converged`, `iterations`, `f_evals`, `cpu_time`, `flag::Symbol`, `residual`,
@@ -323,17 +380,19 @@ function insert_result!(db, hash::String, problem::AbstractString, dim::Int,
                         init::AbstractString, seed_idx::Int, run_id::String,
                         result;
                         script::AbstractString="s30",
-                        native_residual::Float64=NaN)
+                        native_residual::Float64=NaN,
+                        production::Bool=false)
     DBInterface.execute(db, """
         INSERT OR REPLACE INTO results
             (script, config_hash, problem, dimension, init_point, seed_idx, run_id,
              converged, iterations, f_evals, cpu_time, flag,
-             residual, scaled_residual, native_residual, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             residual, scaled_residual, native_residual, production, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (script, hash, problem, dim, init, seed_idx, run_id,
           result.converged ? 1 : 0, result.iterations, result.f_evals,
           result.cpu_time, string(result.flag),
           result.residual, result.scaled_residual, native_residual,
+          production ? 1 : 0,
           Dates.format(now(), "yyyy-mm-dd HH:MM:SS")))
 end
 
@@ -356,23 +415,25 @@ speedup expected over per-row auto-commit.
 function insert_history!(db, hash::String, problem::AbstractString, dim::Int,
                          init::AbstractString, seed_idx::Int,
                          history::Vector{IterRecord};
-                         script::AbstractString="s30")
+                         script::AbstractString="s30",
+                         production::Bool=false)
     isempty(history) && return
+    p = production ? 1 : 0
 
     DBInterface.execute(db, "BEGIN TRANSACTION")
     try
         DBInterface.execute(db, """
             DELETE FROM history
-            WHERE script=? AND config_hash=? AND problem=? AND dimension=? AND init_point=?
-        """, (script, hash, problem, dim, init))
+            WHERE script=? AND config_hash=? AND problem=? AND dimension=? AND init_point=? AND production=?
+        """, (script, hash, problem, dim, init, p))
 
         for h in history
             DBInterface.execute(db, """
                 INSERT INTO history
-                    (script, config_hash, problem, dimension, init_point, seed_idx,
+                    (script, config_hash, problem, dimension, init_point, seed_idx, production,
                      k, f_evals, elapsed, residual, scaled_residual, step_size)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (script, hash, problem, dim, init, seed_idx,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (script, hash, problem, dim, init, seed_idx, p,
                   h.k, h.f_evals, h.elapsed,
                   h.residual, h.scaled_residual, h.step_size))
         end
@@ -396,7 +457,7 @@ columns (script, seed_idx, scaled_residual, native_residual). Returns row count.
 """
 function export_results_csv(db, path::String)
     df = DBInterface.execute(db, """
-        SELECT r.script,
+        SELECT r.script, r.production,
                c.method, c.version, c.params_json, c.eps, c.maxiter,
                r.problem, r.dimension, r.init_point, r.seed_idx,
                r.converged, r.iterations, r.f_evals, r.cpu_time, r.flag,
@@ -420,11 +481,13 @@ for one-shot "how many runs total per method?" reports; usually not what
 you want for paper-table generation (use the script-filtered default).
 """
 function print_summary(db, tee, method_order::Vector{String};
-                       script::AbstractString="s30")
+                       script::AbstractString="s30", production_only::Bool=false)
     all_scripts = isempty(script)
+    prodclause  = production_only ? " AND r.production = 1" : ""
 
     println(tee, "\n" * "=" ^ 70)
-    println(tee, "  Summary  (script=" * (all_scripts ? "ALL" : repr(script)) * ")")
+    println(tee, "  Summary  (script=" * (all_scripts ? "ALL" : repr(script)) *
+                 (production_only ? ", production only" : "") * ")")
     println(tee, "=" ^ 70)
 
     @printf(tee, "\n  %-12s  %6s  %6s  %7s  %8s  %8s  %8s\n",
@@ -436,13 +499,13 @@ function print_summary(db, tee, method_order::Vector{String};
             DBInterface.execute(db, """
                 SELECT r.converged, r.iterations, r.f_evals, r.cpu_time
                 FROM results r JOIN configs c ON r.config_hash = c.config_hash
-                WHERE c.method = ?
+                WHERE c.method = ?$prodclause
             """, (m,)) |> DataFrame
         else
             DBInterface.execute(db, """
                 SELECT r.converged, r.iterations, r.f_evals, r.cpu_time
                 FROM results r JOIN configs c ON r.config_hash = c.config_hash
-                WHERE c.method = ? AND r.script = ?
+                WHERE c.method = ? AND r.script = ?$prodclause
             """, (m, script)) |> DataFrame
         end
 

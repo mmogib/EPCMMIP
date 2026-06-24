@@ -31,7 +31,8 @@
 
 include(joinpath(@__DIR__, "..", "src", "includes.jl"))
 
-const METHOD_TYPES = Dict("EPCM" => EPCM, "MTTM" => MTTM, "IMTTM" => IMTTM,
+const METHOD_TYPES = Dict("EPCM" => EPCM, "EFBFP" => EFBFP, "AEFBFP" => AEFBFP,
+                          "MTTM" => MTTM, "IMTTM" => IMTTM,
                           "SFRBM" => SFRBM, "IFRAB" => IFRAB)
 # Suite (2026-05-28): P1=Volterra SFP (dim=grid N), P2=ℓ1+quad (m), P3=control
 # (K=100 fixed), P4=LASSO (signal N). Stopping = native source-paper criterion
@@ -102,6 +103,29 @@ function oat_groups(alg::EPCM)
         ("vartheta_0",  _pts(:vartheta_0, [0.15, 0.2, 0.3, 0.4])),
         ("vartheta_1",  _pts(:vartheta_1, [0.05, 0.1, 0.15, 0.19])),
         ("zeta",        _pts(:zeta, [0.2, 0.4, 0.5, 0.6, 0.66])),
+    ]
+end
+
+function oat_groups(alg::EFBFP)   # = EPCM's groups minus gamma/zeta (no PC step)
+    return [
+        ("tau_0",       _pts(:tau_0, alg.tau_0 .* LOG_MULT)),
+        ("sigma_exp",   _pts(:sigma_exp, [0.6, 0.75, 0.9, 1.0])),
+        ("sigma_scale", _pts(:sigma_scale, [0.1, 0.25, 0.5, 1.0])),
+        ("delta",       vcat(_pts(:delta_exp, [1.25, 1.5, 2.0, 2.5, 3.0]),
+                             [("delta_rule=:zero", (delta_rule = :zero,))])),
+        ("vartheta_0",  _pts(:vartheta_0, [0.15, 0.2, 0.3, 0.4])),
+        ("vartheta_1",  _pts(:vartheta_1, [0.05, 0.1, 0.15, 0.19])),
+    ]
+end
+
+function oat_groups(alg::AEFBFP)  # min-rule stepsize: sweep μ and the summable ξ_k
+    return [
+        ("tau_0",       _pts(:tau_0, alg.tau_0 .* LOG_MULT)),
+        ("sigma_exp",   _pts(:sigma_exp, [0.6, 0.75, 0.9, 1.0])),
+        ("sigma_scale", _pts(:sigma_scale, [0.1, 0.25, 0.5, 1.0])),
+        ("xi",          vcat(_pts(:xi_exp, [1.25, 1.5, 2.0, 2.5, 3.0]),
+                             [("xi_rule=:zero", (xi_rule = :zero,))])),
+        ("mu",          _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
     ]
 end
 
@@ -186,17 +210,39 @@ end
 # Main
 # ============================================================================
 
-function main()
-    opts, flags = parse_cli(ARGS)
+"Methods to sweep: --method=X (one), --methods=X,Y (subset), or ALL (default)."
+function select_methods(opts)
+    known = sort(collect(keys(METHOD_TYPES)))
+    if haskey(opts, "method")
+        m = opts["method"]
+        haskey(METHOD_TYPES, m) || error("--method must be one of {$(join(known, ", "))}; got '$m'")
+        return [m]
+    elseif haskey(opts, "methods")
+        ms = String.(strip.(split(opts["methods"], ",")))
+        all(m -> haskey(METHOD_TYPES, m), ms) ||
+            error("--methods has an unknown entry; known: $(join(known, ", "))")
+        return ms
+    end
+    return known                                   # default: ALL methods
+end
 
-    method_str  = get(opts, "method", "")
-    problem_str = get(opts, "problem", "")
-    known_methods = join(sort(collect(keys(METHOD_TYPES))), ", ")
-    haskey(METHOD_TYPES, method_str) ||
-        error("--method must be one of {$known_methods}; got '$method_str'")
-    problem_str in ("P1", "P2", "P3", "P4") ||
-        error("--problem must be P1|P2|P3|P4; got '$problem_str'")
+"Problems to sweep: --problem=Pk (one), --problems=Pk,Pj (subset), or ALL (default)."
+function select_problems(opts)
+    allp = ["P1", "P2", "P3", "P4"]
+    if haskey(opts, "problem")
+        p = opts["problem"]
+        p in allp || error("--problem must be P1|P2|P3|P4; got '$p'")
+        return [p]
+    elseif haskey(opts, "problems")
+        ps = String.(strip.(split(opts["problems"], ",")))
+        all(p -> p in allp, ps) || error("--problems entry must be among P1|P2|P3|P4")
+        return ps
+    end
+    return allp                                    # default: ALL problems
+end
 
+# Run the OAT screen for ONE (method, problem) cell on a shared DB handle.
+function run_one_cell(method_str::AbstractString, problem_str::AbstractString, opts, flags, db)
     quick     = "quick" in flags
     force     = "force" in flags
     do_export = "export" in flags
@@ -235,7 +281,6 @@ function main()
     @printf(tee, "  OAT groups   : %d  (%s)\n",
             length(groups), join(first.(groups), ", "))
 
-    db     = open_db()
     run_id = "s10_$(Dates.format(now(), "yyyymmdd_HHMMSS"))"
 
     # ── Run the sweep ──────────────────────────────────────────────────────
@@ -303,6 +348,16 @@ function main()
     println(tee, "=" ^ 78)
 
     teardown_logging(tee, logpath)
+    return true
+end
+
+# Default = sweep ALL methods × ALL problems; narrow with --method(s)/--problem(s).
+function main()
+    opts, flags = parse_cli(ARGS)
+    db = open_db()                                 # one connection for the whole sweep
+    for method_str in select_methods(opts), problem_str in select_problems(opts)
+        run_one_cell(method_str, problem_str, opts, flags, db)
+    end
     return true
 end
 
