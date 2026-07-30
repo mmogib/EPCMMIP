@@ -1,7 +1,7 @@
 # callbacks.jl — Event-dispatched callback system for solvers.
 #
 # Defines the abstract callback hierarchy, the shared `SolverState` struct,
-# and the dispatch contracts used by all five solvers in `algorithm.jl`.
+# and the dispatch contracts used by all solver bodies in `algorithm.jl`.
 #
 # Design (script_port_plan.md §4 / Q3 + post-review revisions):
 #

@@ -7,7 +7,7 @@
 #
 #   :paper      — the source-paper verbatim values (used by s28 home-cell
 #                 validation).
-#   :P1.. :P4   — per-problem search CENTRES for the s20 LHS sweep (currently
+#   :P1.. :P5   — per-problem search CENTRES for the s20 LHS sweep (currently
 #                 seeded equal to :paper; edit here if a problem needs a
 #                 different starting point).
 #
@@ -27,6 +27,7 @@ const MTTM_PRESETS = Dict{Symbol,NamedTuple}(
     :P2    => (lambda_0=7.55, mu=0.85, alpha_rule=:inv_n, beta_rule=:n_minus_1_over_2n),
     :P3    => (lambda_0=7.55, mu=0.85, alpha_rule=:inv_n, beta_rule=:n_minus_1_over_2n),
     :P4    => (lambda_0=7.55, mu=0.85, alpha_rule=:inv_n, beta_rule=:n_minus_1_over_2n),
+    :P5    => (lambda_0=7.55, mu=0.85, alpha_rule=:inv_n, beta_rule=:n_minus_1_over_2n),
 )
 
 # ── IMTTM (Tan2022a Alg 3.3) ────────────────────────────────────────────────
@@ -42,6 +43,8 @@ const IMTTM_PRESETS = Dict{Symbol,NamedTuple}(
     :P3    => (lambda_0=1.0,  mu=0.5, theta=0.5,
                alpha_rule=:inv_n_plus_1, beta_rule=:tan, epsilon_rule=:hundred_inv_sq),
     :P4    => (lambda_0=1.0,  mu=0.5, theta=0.5,
+               alpha_rule=:inv_n_plus_1, beta_rule=:tan, epsilon_rule=:hundred_inv_sq),
+    :P5    => (lambda_0=1.0,  mu=0.5, theta=0.5,
                alpha_rule=:inv_n_plus_1, beta_rule=:tan, epsilon_rule=:hundred_inv_sq),
 )
 
@@ -62,6 +65,9 @@ const IFRAB_PRESETS = Dict{Symbol,NamedTuple}(
     :P4    => (delta_0=0.1, delta_1=0.3, rbar=0.3, vartheta_bar=0.04,
                sigma_rule=:izuchukwu_sigma, c_rule=:inv_n_sq_plus_1,
                vartheta_rule=:n_over_n_plus_1),
+    :P5    => (delta_0=0.1, delta_1=0.3, rbar=0.3, vartheta_bar=0.04,
+               sigma_rule=:izuchukwu_sigma, c_rule=:inv_n_sq_plus_1,
+               vartheta_rule=:n_over_n_plus_1),
 )
 
 # ── SFRBM (Yao2024 Alg 2) — Ex 4.1–4.3 verbatim ─────────────────────────────
@@ -71,4 +77,109 @@ const SFRBM_PRESETS = Dict{Symbol,NamedTuple}(
     :P2    => (lambda_minus1=1.0e-4, lambda_0=1.0e-4, mu=1.0e-4, theta=10.0, beta_rule=:yao),
     :P3    => (lambda_minus1=1.0e-4, lambda_0=1.0e-4, mu=1.0e-4, theta=10.0, beta_rule=:yao),
     :P4    => (lambda_minus1=1.0e-4, lambda_0=1.0e-4, mu=1.0e-4, theta=10.0, beta_rule=:yao),
+    :P5    => (lambda_minus1=1.0e-4, lambda_0=1.0e-4, mu=1.0e-4, theta=10.0, beta_rule=:yao),
+)
+
+# ── VAFBS (Thong2019 Alg 3.1) — source-paper compressed-sensing values ──────
+# The paper reports multiple test settings on the same LASSO model; :paper uses
+# the first published set (δ=0.5, ℓ=0.5, μ=0.5, γ=1, α_n=0.01/n). The repo-side
+# contraction choice is fixed to f(x)=0.9x per the user's instruction.
+const VAFBS_PRESETS = Dict{Symbol,NamedTuple}(
+    :paper => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+    :P1    => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+    :P2    => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+    :P3    => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+    :P4    => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+    :P5    => (delta=0.5, ell=0.5, mu=0.5, gamma=1.0,
+               alpha_rule=:c_over_n, alpha_scale=0.01, f_scale=0.9),
+)
+
+# —— MDITSM (Wang2023 Alg 3.1) — Example 5.1 compressed-sensing values ————
+# The paper reports several experiment-specific settings. `:paper` uses the main
+# Example 5.1 Alg1 comparison configuration, and the suite presets are seeded to
+# that same source-paper setting until s20 tuning is run.
+const MDITSM_PRESETS = Dict{Symbol,NamedTuple}(
+    :paper => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+    :P1    => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+    :P2    => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+    :P3    => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+    :P4    => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+    :P5    => (mu=0.9, lambda_1=0.1,
+               alpha_rule=:one_minus_scale_over_base_pow_n, alpha_scale=1.0, alpha_base=10.0,
+               beta_rule=:cap_minus_inv_n_plus_shift, beta_cap=0.1, beta_shift=1000.0,
+               theta_rule=:cap_minus_inv_n_plus_shift, theta_cap=0.45, theta_shift=1000.0,
+               mu_rule=:scale_over_n_pow, mu_scale=1.0, mu_exp=2.0,
+               p_rule=:scale_over_n_pow, p_scale=1.0, p_exp=2.0),
+)
+
+# —— MFRBSM (Hieu2021 Alg 3.1) — 4OR 19 (2021), numerical-section values ————
+# The paper tests several μ values in (0, 1/2); the main comparison tables use
+# λ_{-1} = λ_0 = 0.1 and μ = 0.49. We seed every suite cell from that setting
+# until a dedicated tuning sweep is run.
+const MFRBSM_PRESETS = Dict{Symbol,NamedTuple}(
+    :paper => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+    :P1    => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+    :P2    => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+    :P3    => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+    :P4    => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+    :P5    => (lambda_minus1=0.1, lambda_0=0.1, mu=0.49),
+)
+
+# —— RFBSM (Cholamjiak2021 Alg 1) — Section 5 signal-recovery values ———————
+const RFBSM_PRESETS = Dict{Symbol,NamedTuple}(
+    :paper => (lambda_0=1.0, theta=1.0, mu=0.9),
+    :cs_benchmark => (lambda_0=1.0, theta=0.8, mu=0.9),
+    :P1    => (lambda_0=1.0, theta=1.0, mu=0.9),
+    :P2    => (lambda_0=1.0, theta=1.0, mu=0.9),
+    :P3    => (lambda_0=1.0, theta=1.0, mu=0.9),
+    :P4    => (lambda_0=1.0, theta=1.0, mu=0.9),
+    :P5    => (lambda_0=1.0, theta=1.0, mu=0.9),
+)
+
+# —— IRFBSM (Cholamjiak2021 Alg 2) — Section 5 signal-recovery values ——————
+# Note: Section 5 reports (lambda_0, theta, mu, alpha) = (1, 1, 0.9, 0.1), but
+# Algorithm 2 / equation (21) then requires alpha < 0.0456356106. The repo keeps
+# the theorem-side admissibility check active, so the :paper preset uses the
+# nearby admissible surrogate alpha = 0.04 instead. See
+# notes/cholamjiak2021_irfbsm_preset_note.md.
+# :cs_benchmark is the declared compressed-sensing sensitivity selection
+# (theta = 0.8), while :paper remains the source-provenance setting.
+const IRFBSM_PRESETS = Dict{Symbol,NamedTuple}(
+    :paper => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
+    :cs_benchmark => (lambda_0=1.0, theta=0.8, mu=0.9, alpha=0.04),
+    :P1    => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
+    :P2    => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
+    :P3    => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
+    :P4    => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
+    :P5    => (lambda_0=1.0, theta=1.0, mu=0.9, alpha=0.04),
 )

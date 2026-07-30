@@ -32,7 +32,7 @@
 include(joinpath(@__DIR__, "..", "src", "includes.jl"))
 using Statistics
 
-const S28_BASELINES = (MTTM, IMTTM, IFRAB, SFRBM)         # EPCM has no :paper preset
+const S28_BASELINES = (MTTM, IMTTM, IFRAB, SFRBM, VAFBS, MDITSM, RFBSM, IRFBSM)  # EPCM has no :paper preset
 const S28_PROBLEMS  = ("P1", "P2", "P3", "P4")
 const S28_REFDIM    = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 256)
 const S28_HOME      = Dict(                               # problems that are each method's source-paper home
@@ -40,6 +40,10 @@ const S28_HOME      = Dict(                               # problems that are ea
     "IMTTM" => ["P1", "P4"],              # Tan2022a Ex 5.2 / 5.3
     "IFRAB" => ["P3"],                    # Izuchukwu2023 Ex 6.2
     "SFRBM" => ["P2"],                    # Yao2024 Ex 4.2
+    "VAFBS" => ["P4"],                    # Thong2019 compressed-sensing / LASSO model
+    "MDITSM" => ["P4"],                   # Wang2023 compressed-sensing / LASSO class match
+    "RFBSM" => ["P4"],                    # Cholamjiak2021 signal-recovery / LASSO class match
+    "IRFBSM" => ["P4"],                   # Cholamjiak2021 signal-recovery / LASSO class match
 )
 
 function parse_cli(args)
@@ -117,7 +121,9 @@ function main()
         if !isempty(home)
             homestr = join(home, ",")
             srcname = mname == "IMTTM" ? "Tan2022a" : mname == "IFRAB" ? "Izuchukwu2023" :
-                      mname == "SFRBM" ? "Yao2024" : "source"
+                      mname == "SFRBM" ? "Yao2024" : mname == "VAFBS" ? "Thong2019" :
+                      mname == "MDITSM" ? "Wang2023" :
+                      (mname == "RFBSM" || mname == "IRFBSM") ? "Cholamjiak2021" : "source"
             println(tee, "    → $mname home = $homestr: the ★ row(s) must converge / stay stable (compare to $srcname).")
         else
             println(tee, "    → $mname home (Gibali2018) is NOT in the suite — rows are off-home behavior only (no source-cell validation).")

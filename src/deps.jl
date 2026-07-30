@@ -2,7 +2,7 @@
 # All shared dependencies go here. Scripts add only script-specific packages.
 #
 # Script-only packages (add via `using` in the script, not here):
-#   Plots, LaTeXStrings, BenchmarkProfiles — figure scripts
+#   BenchmarkProfiles — profile/attainment plotting scripts
 #   Colors — custom RGB palettes
 
 # Standard library
@@ -22,6 +22,10 @@ using JSON3
 # Data I/O
 using DataFrames
 using CSV
+
+# Figure support
+using Plots
+using LaTeXStrings
 
 # Progress bars
 using ProgressMeter

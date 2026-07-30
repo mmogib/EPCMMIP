@@ -1,9 +1,7 @@
 # algorithm.jl — `solve` method bodies for each AbstractAlgorithm subtype.
 #
-# Currently contains:
-#   - solve(::EPCM, prob, x0; stopping, observers)  (Step 7)
-#
-# Step 10 will add solve methods for MTTM, IMTTM, IFRAB, SFRBM.
+# Contains the solver implementations for the proposed methods and the baseline
+# competitors.
 #
 # Every body honours the 9-step "Solver responsibility" contract documented
 # in `callbacks.jl`'s `SolverState` docstring. In particular:
@@ -12,12 +10,27 @@
 #     the stopping tuple (otherwise NanStopping short-circuits or
 #     ResidualStopping reads stale values).
 
+"""
+    algorithm_B!(state, B, x)
+
+Evaluate the forward operator `B(x)` and register one F-evaluation.  Use this
+only when the value is required by the algorithmic update, line search,
+stepsize rule, or cache for a later algorithmic update.  Calls made solely for
+residual diagnostics or stopping checks must use `B(x)` directly and are not
+included in `state.f_evals`.
+"""
+@inline function algorithm_B!(state::SolverState, B, x)
+    state.f_evals += 1
+    return B(x)
+end
+
 # ============================================================================
 # Rule dispatchers — Symbol tags → numeric values per iteration
 # ============================================================================
 # Each algorithm's struct has Symbol-typed rule fields (e.g. delta_rule,
 # sigma_rule). The solver resolves these to Float64 values at each iter via
 # the helpers below. Adding a new rule = add a new Symbol case here.
+
 
 """
     _epcm_delta(rule::Symbol, exp::Float64, k::Int) -> Float64
@@ -27,12 +40,15 @@ Step 11-2 parametrization). Rules:
 - `:power` → δ_k = 1/(k+1)^`exp` (admissible iff `exp > 1`; default `exp=2`
   reproduces the manuscript's 1/(k+1)², headroom Π(1+δ_k) ≈ 3.68×).
 - `:zero`  → δ_k ≡ 0 (monotone-shrink baseline; `exp` ignored).
+- `:cs_inv_k_plus_100_sq` → 1/(k+100)^2, the compressed-sensing ξ_k rule;
+  `exp` is ignored.
 The `exp > 1` admissibility is validated once at `solve` entry, not here.
 """
 @inline function _epcm_delta(rule::Symbol, exp::Float64, k::Int)
     rule === :power && return 1.0 / (k + 1.0)^exp
     rule === :zero  && return 0.0
-    throw(ArgumentError("Unknown EPCM delta_rule :$rule; known: :power, :zero"))
+    rule === :cs_inv_k_plus_100_sq && return 1.0 / (k + 100.0)^2
+    throw(ArgumentError("Unknown EPCM delta_rule :$rule; known: :power, :zero, :cs_inv_k_plus_100_sq"))
 end
 
 """
@@ -43,12 +59,35 @@ EPCM's σ_k Halpern-anchoring weight (parameter restriction: σ_k∈(0,1), σ_k�
 - `:power` → σ_k = `scale` / (k+2)^`exp`. Admissible iff `exp ∈ (0,1]` (so
   ∑ diverges) and σ_0 = `scale`/2^`exp` < 1. Default `scale=1, exp=1`
   reproduces the manuscript's 1/(k+2) (Lieder-optimal Halpern weight).
+- `:cs_inv_1000k_plus_1` → σ_k = 1/(1000k+1), for the compressed-sensing
+  experiment. `scale` and `exp` are ignored.
+- `:log_power` → σ_k = `scale`/(1 + log(k+1))^`exp`; this normalized
+  logarithmic family is defined at k=0.
 The admissibility is validated once at `solve` entry, not here.
 """
 @inline function _epcm_sigma(rule::Symbol, scale::Float64, exp::Float64, k::Int)
     rule === :power && return scale / (k + 2.0)^exp
-    throw(ArgumentError("Unknown EPCM sigma_rule :$rule; known: :power"))
+    rule === :cs_inv_1000k_plus_1 && return 1.0 / (1000.0 * k + 1.0)
+    rule === :log_power && return scale / (1.0 + log(k + 1.0))^exp
+    throw(ArgumentError("Unknown EPCM sigma_rule :$rule; known: :power, :cs_inv_1000k_plus_1, :log_power"))
 end
+
+"""
+    _maefbfp_alpha(scale::Float64, exp::Float64, k::Int) -> Float64
+
+MAEFBFP's nonnegative decay sequence
+`α_k = scale / (k+1)^exp`, with `scale ≥ 0`, `exp > 0`, so `α_k → 0`.
+"""
+@inline _maefbfp_alpha(scale::Float64, exp::Float64, k::Int) = scale / (k + 1.0)^exp
+
+"""
+    _maefbfp_beta(scale::Float64, exp::Float64, k::Int) -> Float64
+
+MAEFBFP's lower-bounded decay sequence
+`β_k = 1 + scale / (k+1)^exp`, with `scale ≥ 0`, `exp > 0`, so `β_k ≥ 1`
+and `β_k → 1`.
+"""
+@inline _maefbfp_beta(scale::Float64, exp::Float64, k::Int) = 1.0 + scale / (k + 1.0)^exp
 
 """
     _mttm_alpha(rule::Symbol, n::Int) -> Float64
@@ -169,6 +208,89 @@ satisfying the nesting 0 ≤ ϑ_n ≤ ϑ_{n+1} ≤ ϑ̄ without a tuned cutoff.
 @inline function _ifrab_vartheta(rule::Symbol, vartheta_bar::Float64, n::Int)
     rule === :n_over_n_plus_1 && return vartheta_bar * n / (n + 1)
     throw(ArgumentError("Unknown IFRAB vartheta_rule :$rule; known: :n_over_n_plus_1"))
+end
+
+"""
+    _vafbs_alpha(rule::Symbol, scale::Float64, n::Int) -> Float64
+
+VAFBS's viscosity weight sequence α_n. Rules:
+- `:c_over_n` → α_n = scale / n
+
+Admissibility is validated once at `solve` entry: `scale ∈ (0,1)` ensures
+`α_n ∈ (0,1)` for all `n ≥ 1`, while still satisfying `α_n → 0` and
+`∑ α_n = ∞`.
+"""
+@inline function _vafbs_alpha(rule::Symbol, scale::Float64, n::Int)
+    rule === :c_over_n && return scale / n
+    throw(ArgumentError("Unknown VAFBS alpha_rule :$rule; known: :c_over_n"))
+end
+
+"""
+    _mditsm_alpha(rule::Symbol, scale::Float64, base::Float64, n::Int) -> Float64
+
+MDITSM's first inertial sequence α_n. Index `n` is 1-based (`n = state.k + 1`).
+Rules:
+- `:one_minus_scale_over_base_pow_n` → α_n = 1 - scale / base^n
+
+The paper's Example 5.1 choice is recovered by `scale=1`, `base=10`, giving
+α_n = 1 - 10^{-n}.
+"""
+@inline function _mditsm_alpha(rule::Symbol, scale::Float64, base::Float64, n::Int)
+    rule === :one_minus_scale_over_base_pow_n && return 1.0 - scale / (base^n)
+    throw(ArgumentError("Unknown MDITSM alpha_rule :$rule; known: :one_minus_scale_over_base_pow_n"))
+end
+
+"""
+    _mditsm_beta(rule::Symbol, cap::Float64, shift::Float64, n::Int) -> Float64
+
+MDITSM's second inertial sequence β_n. Index `n` is 1-based. Rules:
+- `:cap_minus_inv_n_plus_shift` → β_n = cap - 1/(shift + n)
+
+The paper's Example 5.1 choice is recovered by `cap=0.1`, `shift=1000`.
+"""
+@inline function _mditsm_beta(rule::Symbol, cap::Float64, shift::Float64, n::Int)
+    rule === :cap_minus_inv_n_plus_shift && return cap - 1.0 / (shift + n)
+    throw(ArgumentError("Unknown MDITSM beta_rule :$rule; known: :cap_minus_inv_n_plus_shift"))
+end
+
+"""
+    _mditsm_theta(rule::Symbol, cap::Float64, shift::Float64, n::Int) -> Float64
+
+MDITSM's relaxation sequence θ_n. Index `n` is 1-based. Rules:
+- `:cap_minus_inv_n_plus_shift` → θ_n = cap - 1/(shift + n)
+
+The paper's Example 5.1 choice is recovered by `cap=0.45`, `shift=1000`.
+"""
+@inline function _mditsm_theta(rule::Symbol, cap::Float64, shift::Float64, n::Int)
+    rule === :cap_minus_inv_n_plus_shift && return cap - 1.0 / (shift + n)
+    throw(ArgumentError("Unknown MDITSM theta_rule :$rule; known: :cap_minus_inv_n_plus_shift"))
+end
+
+"""
+    _mditsm_mu_aux(rule::Symbol, scale::Float64, exp::Float64, n::Int) -> Float64
+
+MDITSM's relaxation sequence μ_n in the adaptive stepsize update. Index `n` is
+1-based. Rules:
+- `:scale_over_n_pow` → μ_n = scale / n^exp
+- `:zero`             → μ_n ≡ 0
+"""
+@inline function _mditsm_mu_aux(rule::Symbol, scale::Float64, exp::Float64, n::Int)
+    rule === :scale_over_n_pow && return scale / (n^exp)
+    rule === :zero             && return 0.0
+    throw(ArgumentError("Unknown MDITSM mu_rule :$rule; known: :scale_over_n_pow, :zero"))
+end
+
+"""
+    _mditsm_p(rule::Symbol, scale::Float64, exp::Float64, n::Int) -> Float64
+
+MDITSM's additive stepsize-growth budget p_n. Index `n` is 1-based. Rules:
+- `:scale_over_n_pow` → p_n = scale / n^exp
+- `:zero`             → p_n ≡ 0
+"""
+@inline function _mditsm_p(rule::Symbol, scale::Float64, exp::Float64, n::Int)
+    rule === :scale_over_n_pow && return scale / (n^exp)
+    rule === :zero             && return 0.0
+    throw(ArgumentError("Unknown MDITSM p_rule :$rule; known: :scale_over_n_pow, :zero"))
 end
 
 # ============================================================================
@@ -448,8 +570,8 @@ function solve(alg::EFBFP, prob::TestProblem, x0::Vector{Float64};
     t0      = time()
     x_0     = copy(x0)
     z_prev  = copy(x0)              # z_{-1} = x_0
-    Bz_prev = prob.B(z_prev)        # B(z_{-1}) — first f_eval
-    state.f_evals = 1
+    state.f_evals = 0
+    Bz_prev = algorithm_B!(state, prob.B, z_prev) # B(z_{-1}) — first f_eval
     τ_curr  = alg.tau_0
     state.step_size = τ_curr
     for cb in observers
@@ -465,8 +587,7 @@ function solve(alg::EFBFP, prob::TestProblem, x0::Vector{Float64};
 
         # Step 2: Resolvent (uses cached Bz_prev = B(z_{k-1}))
         z_k = prob.resolvent_A(w_k .- τ_curr .* Bz_prev, τ_curr)
-        Bz_k = prob.B(z_k)
-        state.f_evals += 1
+        Bz_k = algorithm_B!(state, prob.B, z_k)
 
         # Step 3: Forward correction = iterate update (NO projection–contraction)
         x_next = z_k .+ τ_curr .* (Bz_prev .- Bz_k)
@@ -564,8 +685,8 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
                observers::Tuple = ())
 
     # ── Parameter validation (manuscript Algorithm 3 input constraints) ──
-    (0 < alg.mu < 1 / sqrt(6)) ||
-        throw(ArgumentError("AEFBFP: strict admissibility — μ ∈ (0, 1/√6 ≈ 0.4082) (Theorem thm:aefbfp), got μ = $(alg.mu)."))
+    (0 < alg.mu < 0.5) ||
+        throw(ArgumentError("AEFBFP: strict admissibility — μ ∈ (0, 1/2 ≈ 0.5) (Theorem thm:aefbfp), got μ = $(alg.mu)."))
     alg.tau_0 > 0 ||
         throw(ArgumentError("AEFBFP: τ_0 must be > 0, got $(alg.tau_0)"))
     if alg.sigma_rule === :power
@@ -576,6 +697,11 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
         σ0 = alg.sigma_scale / 2.0^alg.sigma_exp
         σ0 < 1 ||
             throw(ArgumentError("AEFBFP: require σ_0 = sigma_scale/2^sigma_exp < 1, got σ_0 = $σ0"))
+    elseif alg.sigma_rule === :log_power
+        alg.sigma_exp > 0 ||
+            throw(ArgumentError("AEFBFP: sigma_exp must be > 0 for the :log_power rule, got $(alg.sigma_exp)"))
+        (0 < alg.sigma_scale < 1) ||
+            throw(ArgumentError("AEFBFP: require 0 < sigma_scale < 1 for the :log_power rule, got $(alg.sigma_scale)"))
     end
     if alg.xi_rule === :power
         alg.xi_exp > 1 ||
@@ -586,8 +712,8 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
     t0      = time()
     x_0     = copy(x0)
     z_prev  = copy(x0)              # z_{-1} = x_0
-    Bz_prev = prob.B(z_prev)        # B(z_{-1}) — first f_eval
-    state.f_evals = 1
+    state.f_evals = 0
+    Bz_prev = algorithm_B!(state, prob.B, z_prev) # B(z_{-1}) — first f_eval
     τ_curr  = alg.tau_0
     state.step_size = τ_curr
     for cb in observers
@@ -603,8 +729,7 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
 
         # Step 2: Resolvent (uses cached Bz_prev = B(z_{k-1}))
         z_k = prob.resolvent_A(w_k .- τ_curr .* Bz_prev, τ_curr)
-        Bz_k = prob.B(z_k)
-        state.f_evals += 1
+        Bz_k = algorithm_B!(state, prob.B, z_k)
 
         # Step 3: Forward correction = iterate update
         x_next = z_k .+ τ_curr .* (Bz_prev .- Bz_k)
@@ -673,6 +798,886 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
         scaled_residual = state.scaled_residual,
     )
 end
+
+# ============================================================================
+# MAEFBFP — Modified Adaptive Extrapolated Forward–Backward–Forward
+# ============================================================================
+#
+# MAEFBFP modifies AEFBFP's min-rule factor μ to the iteration-dependent
+# coefficient
+#   α_k + β_k μ,
+# where α_k = alpha_scale/(k+1)^alpha_exp → 0 and
+# β_k = 1 + beta_scale/(k+1)^beta_exp → 1 with β_k ≥ 1. The stepsize becomes
+#   τ_{k+1} = min{ (α_k + β_k μ)‖z_k-z_{k-1}‖ / ‖B(z_k)-B(z_{k-1})‖, τ_k+ξ_k }
+#         or  τ_k + ξ_k
+# in the zero-denominator case. Setting alpha_scale = beta_scale = 0 recovers
+# AEFBFP exactly.
+
+"""
+    solve(alg::MAEFBFP, prob::TestProblem, x0::Vector{Float64};
+          stopping::Tuple, observers::Tuple = ()) -> SolverResult
+
+Run the modified AEFBFP iteration on `prob` from `x0`, replacing AEFBFP's
+constant min-rule factor `μ` by `α_k + β_k μ`, with `α_k → 0`, `β_k → 1`,
+`α_k ≥ 0`, `β_k ≥ 1`. The implementation enforces the sufficient uniform bound
+`alpha_scale + (1 + beta_scale) * mu < 1/sqrt(6)` so the effective factor
+stays below AEFBFP's admissibility ceiling at every iteration.
+"""
+function solve(alg::MAEFBFP, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    bound_eff = 1 / sqrt(6)
+    (0 < alg.mu < bound_eff) ||
+        throw(ArgumentError("MAEFBFP: base μ must be in (0, 1/√6 ≈ 0.4082), got μ = $(alg.mu)."))
+    alg.tau_0 > 0 ||
+        throw(ArgumentError("MAEFBFP: τ_0 must be > 0, got $(alg.tau_0)"))
+    alg.alpha_scale >= 0 ||
+        throw(ArgumentError("MAEFBFP: alpha_scale must be ≥ 0, got $(alg.alpha_scale)"))
+    alg.beta_scale >= 0 ||
+        throw(ArgumentError("MAEFBFP: beta_scale must be ≥ 0, got $(alg.beta_scale)"))
+    alg.alpha_exp > 0 ||
+        throw(ArgumentError("MAEFBFP: alpha_exp must be > 0 so α_k → 0, got $(alg.alpha_exp)"))
+    alg.beta_exp > 0 ||
+        throw(ArgumentError("MAEFBFP: beta_exp must be > 0 so β_k → 1, got $(alg.beta_exp)"))
+    eff0 = alg.alpha_scale + (1 + alg.beta_scale) * alg.mu
+    eff0 < bound_eff ||
+        throw(ArgumentError("MAEFBFP: require α_0 + β_0 μ = alpha_scale + (1+beta_scale)μ < 1/√6 ≈ $bound_eff, got $eff0"))
+    if alg.sigma_rule === :power
+        (0 < alg.sigma_exp <= 1) ||
+            throw(ArgumentError("MAEFBFP: sigma_exp must be in (0, 1] for Σσ_k = ∞, got $(alg.sigma_exp)"))
+        alg.sigma_scale > 0 ||
+            throw(ArgumentError("MAEFBFP: sigma_scale must be > 0, got $(alg.sigma_scale)"))
+        σ0 = alg.sigma_scale / 2.0^alg.sigma_exp
+        σ0 < 1 ||
+            throw(ArgumentError("MAEFBFP: require σ_0 = sigma_scale/2^sigma_exp < 1, got σ_0 = $σ0"))
+    end
+    if alg.xi_rule === :power
+        alg.xi_exp > 1 ||
+            throw(ArgumentError("MAEFBFP: xi_exp must be > 1 for Σξ_k < ∞, got $(alg.xi_exp)"))
+    end
+
+    state   = SolverState(:MAEFBFP, x0)
+    t0      = time()
+    x_0     = copy(x0)
+    z_prev  = copy(x0)
+    state.f_evals = 0
+    Bz_prev = algorithm_B!(state, prob.B, z_prev)
+    τ_curr  = alg.tau_0
+    state.step_size = τ_curr
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        state.x_prev = copy(state.x)
+
+        σ_k = _epcm_sigma(alg.sigma_rule, alg.sigma_scale, alg.sigma_exp, state.k)
+        w_k = σ_k .* x_0 .+ (1 - σ_k) .* state.x
+
+        z_k = prob.resolvent_A(w_k .- τ_curr .* Bz_prev, τ_curr)
+        Bz_k = algorithm_B!(state, prob.B, z_k)
+
+        x_next = z_k .+ τ_curr .* (Bz_prev .- Bz_k)
+
+        Δz       = z_prev .- z_k
+        ΔBz      = Bz_prev .- Bz_k
+        norm_Δz  = norm(Δz)
+        norm_ΔBz = norm(ΔBz)
+        ξ_k      = _epcm_delta(alg.xi_rule, alg.xi_exp, state.k)
+        α_k      = _maefbfp_alpha(alg.alpha_scale, alg.alpha_exp, state.k)
+        β_k      = _maefbfp_beta(alg.beta_scale, alg.beta_exp, state.k)
+        eff_k    = α_k + β_k * alg.mu
+        τ_next = norm_ΔBz > 0 ?
+            min(eff_k * norm_Δz / norm_ΔBz, τ_curr + ξ_k) :
+            τ_curr + ξ_k
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = τ_next
+
+        Bxnext        = prob.B(x_next)
+        rho           = τ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        z_prev  = z_k
+        Bz_prev = Bz_k
+        τ_curr  = τ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# VAFBS — Viscosity-Approximation Forward–Backward Splitting (Thong2019 Alg 3.1)
+# ============================================================================
+#
+# Paper notation: A is the single-valued monotone Lipschitz operator, B is the
+# maximal monotone operator. In this repo that maps to:
+#   paper A ↔ prob.B
+#   paper B ↔ prob.resolvent_A
+#
+# Iteration (n = 1, 2, ... in the paper; `n = state.k + 1` here):
+#
+#   y_n = J^B_{λ_n}(x_n - λ_n A x_n),
+#         where λ_n is the largest element of {δ, δℓ, δℓ², ...} satisfying
+#         λ_n⟨A x_n - A y_n, x_n - y_n⟩ ≤ μ‖x_n - y_n‖²
+#   d_n = x_n - y_n - λ_n(A x_n - A y_n)
+#   η_n = (1-μ)‖x_n - y_n‖² / ‖d_n‖²
+#   z_n = x_n - γ η_n d_n
+#   x_{n+1} = α_n f(x_n) + (1-α_n) z_n
+#
+# For this repo, the contraction is encoded as `f(x) = c x`, with `c` stored as
+# `alg.f_scale`. This keeps the algorithm fully hashable and reproducible.
+#
+# B-eval accounting: cache A x_n = prob.B(x_n) across iterations; each rejected
+# or accepted line-search trial evaluates A y_n once, and the universal residual
+# at x_{n+1} evaluates A x_{n+1} once more (that value is cached for the next
+# iteration). So the steady-state cost is `(# line-search trials) + 1` fresh
+# `prob.B` evaluations per iteration, plus 1 preload `prob.B(x0)`.
+
+"""
+    solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
+          stopping::Tuple, observers::Tuple = ()) -> SolverResult
+
+Run the viscosity-approximation forward-backward splitting method
+(Thong–Cholamjiak 2019, Algorithm 3.1) on `prob` from `x0`.
+"""
+function solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    alg.delta > 0 ||
+        throw(ArgumentError("VAFBS: delta must be > 0, got $(alg.delta)"))
+    (0 < alg.ell < 1) ||
+        throw(ArgumentError("VAFBS: require 0 < ell < 1, got ell = $(alg.ell)"))
+    (0 < alg.mu < 1) ||
+        throw(ArgumentError("VAFBS: require 0 < mu < 1, got mu = $(alg.mu)"))
+    (0 < alg.gamma < 2) ||
+        throw(ArgumentError("VAFBS: require 0 < gamma < 2, got gamma = $(alg.gamma)"))
+    if alg.alpha_rule === :c_over_n
+        (0 < alg.alpha_scale < 1) ||
+            throw(ArgumentError("VAFBS: alpha_scale must be in (0,1) for alpha_rule=:c_over_n, got $(alg.alpha_scale)"))
+    end
+    (0 <= alg.f_scale < 1) ||
+        throw(ArgumentError("VAFBS: f_scale must be in [0,1), got $(alg.f_scale)"))
+
+    state = SolverState(:VAFBS, x0)
+    t0    = time()
+
+    state.f_evals = 0
+    Ax_curr = algorithm_B!(state, prob.B, state.x) # paper A(x_n); cached across iterations
+    state.step_size = alg.delta
+
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        x_n = state.x
+        state.x_prev = copy(x_n)
+
+        λ_n    = alg.delta
+        y_n    = similar(x_n)
+        Ay_n   = similar(x_n)
+        lsiter = 0
+        while true
+            y_trial = prob.resolvent_A(x_n .- λ_n .* Ax_curr, λ_n)
+            Ay_trial = algorithm_B!(state, prob.B, y_trial)
+
+            diff_xy = x_n .- y_trial
+            lhs = λ_n * dot(Ax_curr .- Ay_trial, diff_xy)
+            rhs = alg.mu * sum(abs2, diff_xy)
+            if lhs <= rhs + 1.0e-12 * max(1.0, rhs)
+                y_n  = y_trial
+                Ay_n = Ay_trial
+                break
+            end
+
+            λ_n *= alg.ell
+            lsiter += 1
+            lsiter <= 200 ||
+                error("VAFBS: line search did not accept within 200 reductions at iteration $(state.k + 1)")
+        end
+
+        diff_xy    = x_n .- y_n
+        norm_xy_sq = sum(abs2, diff_xy)
+        if norm_xy_sq == 0.0
+            state.x               = copy(y_n)
+            state.elapsed         = time() - t0
+            state.step_size       = λ_n
+            state.residual        = 0.0
+            state.scaled_residual = 0.0
+            state.k += 1
+            for cb in observers
+                on_event!(cb, state, :iter)
+            end
+            state.flag = :converged
+            break
+        end
+
+        d_n       = diff_xy .- λ_n .* (Ax_curr .- Ay_n)
+        norm_d_sq = sum(abs2, d_n)
+        if norm_d_sq == 0.0
+            state.x               = copy(x_n)
+            state.elapsed         = time() - t0
+            state.step_size       = λ_n
+            state.residual        = 0.0
+            state.scaled_residual = 0.0
+            state.k += 1
+            for cb in observers
+                on_event!(cb, state, :iter)
+            end
+            state.flag = :converged
+            break
+        end
+
+        η_n = (1 - alg.mu) * norm_xy_sq / norm_d_sq
+        z_n = x_n .- (alg.gamma * η_n) .* d_n
+
+        n   = state.k + 1
+        α_n = _vafbs_alpha(alg.alpha_rule, alg.alpha_scale, n)
+        x_next = (α_n * alg.f_scale) .* x_n .+ (1 - α_n) .* z_n
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = λ_n
+
+        # This value is cached as A(x_n) for the next iteration, so it counts.
+        Bxnext        = algorithm_B!(state, prob.B, x_next)
+        rho           = λ_n
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        Ax_curr = Bxnext
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# MDITSM — Modified Tseng Splitting Method with Double Inertial Steps
+#           (Wang2023 Algorithm 3.1)
+# ============================================================================
+#
+# Paper notation: A is the single-valued monotone Lipschitz operator, B is the
+# maximal monotone operator. In this repo that maps to:
+#   paper A ↔ prob.B
+#   paper B ↔ prob.resolvent_A
+#
+# Iteration (n = 1, 2, …; iterates x_{n−1}, x_n; current step λ_n):
+#
+#   w_n = x_n + α_n (x_n − x_{n−1})
+#   z_n = x_n + β_n (x_n − x_{n−1})
+#   y_n = J^B_{λ_n}(w_n − λ_n A w_n)
+#   λ_{n+1} = min{ (μ_n+μ)‖w_n−y_n‖ / ‖A w_n−A y_n‖, λ_n + p_n }
+#             if A w_n ≠ A y_n, else λ_n + p_n
+#   x_{n+1} = (1−θ_n)z_n + θ_n(y_n − λ_n(A y_n − A w_n))
+#
+# Wang seeds x_0, x_1 arbitrarily; given one initial point, we set x_0 = x_1 = x0,
+# so the first inertial displacement x_1 − x_0 vanishes. This matches the repo's
+# existing inertial-method convention (cf. IMTTM, IFRAB) and avoids introducing a
+# second caller-side initialization API.
+#
+# B-eval accounting: w_n changes every iteration, so B(w_n) cannot be cached
+# across iterations. Per-iter ALGORITHM cost is therefore 2 fresh B-evals:
+# B(w_n) and B(y_n). The extra B(x_{n+1}) used for the universal residual is
+# monitoring only and is NOT counted in f_evals. No preload.
+
+"""
+    solve(alg::MDITSM, prob::TestProblem, x0::Vector{Float64};
+          stopping::Tuple, observers::Tuple=()) -> SolverResult
+
+Run Wang et al.'s modified Tseng splitting method with double inertial steps
+(Algorithm 3.1) on `prob` from `x0`, using the repo convention x_0 = x_1 = x0.
+Returns a `SolverResult`; per-iteration history is captured iff a
+`HistoryCallback` is in `observers`.
+"""
+function solve(alg::MDITSM, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    alg.lambda_1 > 0 ||
+        throw(ArgumentError("MDITSM: lambda_1 must be > 0, got $(alg.lambda_1)"))
+    (0 < alg.mu < 1) ||
+        throw(ArgumentError("MDITSM: mu must be in (0, 1), got $(alg.mu)"))
+    alg.alpha_base > 1 ||
+        throw(ArgumentError("MDITSM: alpha_base must be > 1, got $(alg.alpha_base)"))
+    (0 < alg.alpha_scale <= alg.alpha_base) ||
+        throw(ArgumentError("MDITSM: require 0 < alpha_scale <= alpha_base; got alpha_scale=$(alg.alpha_scale), alpha_base=$(alg.alpha_base)"))
+    (0 <= alg.beta_cap < 1) ||
+        throw(ArgumentError("MDITSM: require 0 <= beta_cap < 1, got $(alg.beta_cap)"))
+    alg.beta_shift > -1 ||
+        throw(ArgumentError("MDITSM: beta_shift must satisfy shift > -1, got $(alg.beta_shift)"))
+    (0 < alg.theta_cap <= 1) ||
+        throw(ArgumentError("MDITSM: require 0 < theta_cap <= 1, got $(alg.theta_cap)"))
+    alg.theta_shift > -1 ||
+        throw(ArgumentError("MDITSM: theta_shift must satisfy shift > -1, got $(alg.theta_shift)"))
+    if alg.mu_rule === :scale_over_n_pow
+        alg.mu_scale >= 0 ||
+            throw(ArgumentError("MDITSM: mu_scale must be >= 0, got $(alg.mu_scale)"))
+        alg.mu_exp > 0 ||
+            throw(ArgumentError("MDITSM: mu_exp must be > 0 for mu_rule=:scale_over_n_pow, got $(alg.mu_exp)"))
+    end
+    if alg.p_rule === :scale_over_n_pow
+        alg.p_scale >= 0 ||
+            throw(ArgumentError("MDITSM: p_scale must be >= 0, got $(alg.p_scale)"))
+        alg.p_exp > 1 ||
+            throw(ArgumentError("MDITSM: p_exp must be > 1 for p_rule=:scale_over_n_pow, got $(alg.p_exp)"))
+    end
+    α1 = _mditsm_alpha(alg.alpha_rule, alg.alpha_scale, alg.alpha_base, 1)
+    β1 = _mditsm_beta(alg.beta_rule, alg.beta_cap, alg.beta_shift, 1)
+    θ1 = _mditsm_theta(alg.theta_rule, alg.theta_cap, alg.theta_shift, 1)
+    (0 <= α1 <= 1) ||
+        throw(ArgumentError("MDITSM: alpha_1 must lie in [0, 1], got $(α1)"))
+    (0 <= β1 < 1) ||
+        throw(ArgumentError("MDITSM: beta_1 must lie in [0, 1), got $(β1)"))
+    (0 < θ1 <= 1) ||
+        throw(ArgumentError("MDITSM: theta_1 must lie in (0, 1], got $(θ1)"))
+
+    state = SolverState(:MDITSM, x0)
+    state.f_evals = 0
+    t0    = time()
+
+    x_older = copy(x0)       # x_0; state.x starts at x_1 = x0
+    λ_curr  = alg.lambda_1
+    state.step_size = λ_curr
+
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        x_curr = state.x
+        state.x_prev = copy(x_curr)
+
+        n   = state.k + 1
+        α_n = _mditsm_alpha(alg.alpha_rule, alg.alpha_scale, alg.alpha_base, n)
+        β_n = _mditsm_beta(alg.beta_rule, alg.beta_cap, alg.beta_shift, n)
+        θ_n = _mditsm_theta(alg.theta_rule, alg.theta_cap, alg.theta_shift, n)
+        μ_n = _mditsm_mu_aux(alg.mu_rule, alg.mu_scale, alg.mu_exp, n)
+        p_n = _mditsm_p(alg.p_rule, alg.p_scale, alg.p_exp, n)
+
+        inertial = x_curr .- x_older
+        w_n      = x_curr .+ α_n .* inertial
+        z_n      = x_curr .+ β_n .* inertial
+
+        Bw_n = algorithm_B!(state, prob.B, w_n)
+        y_n  = prob.resolvent_A(w_n .- λ_curr .* Bw_n, λ_curr)
+        By_n = algorithm_B!(state, prob.B, y_n)
+
+        Δw      = w_n .- y_n
+        norm_Δw = norm(Δw)
+        if norm_Δw == 0.0
+            state.x               = copy(y_n)
+            state.elapsed         = time() - t0
+            state.step_size       = λ_curr
+            state.residual        = 0.0
+            state.scaled_residual = 0.0
+            state.k += 1
+            for cb in observers
+                on_event!(cb, state, :iter)
+            end
+            state.flag = :converged
+            break
+        end
+
+        ΔB      = Bw_n .- By_n
+        norm_ΔB = norm(ΔB)
+        λ_next  = norm_ΔB > 0 ? min((alg.mu + μ_n) * norm_Δw / norm_ΔB, λ_curr + p_n) :
+                                (λ_curr + p_n)
+
+        correction = y_n .- λ_curr .* (By_n .- Bw_n)
+        x_next     = (1 - θ_n) .* z_n .+ θ_n .* correction
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = λ_next
+
+        # Diagnostic only: this is intentionally NOT part of F-evals.
+        Bxnext        = prob.B(x_next)
+        rho           = λ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        x_older = x_curr
+        λ_curr  = λ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# MFRBSM - Modified Forward-Backward Splitting Method
+#          (Hieu-Anh-Muu 2021 Algorithm 3.1)
+# ============================================================================
+#
+# Iteration:
+#   x_{n+1} = J^A_{\lambda_n}(x_n - \lambda_n B(x_n)
+#                            - \lambda_{n-1}(B(x_n) - B(x_{n-1})))
+#   \lambda_{n+1} = min{ \lambda_n,
+#                        \mu ||x_{n+1} - x_n|| / ||B(x_{n+1}) - B(x_n)|| }
+#
+# The paper assumes x_{-1}, x_0 are given. With the repo's one-point solver API
+# we use the standard inertial-method convention x_{-1} = x_0 = x0, so
+# B(x_{-1}) = B(x_0) at initialization.
+#
+# B-eval accounting: cache B(x_n) and B(x_{n-1}) across iterations. After the
+# initial preload B(x_0), the steady-state algorithm cost is 1 fresh B-eval/iter:
+# B(x_{n+1}), which is reused both for the adaptive stepsize update and as the
+# cached B(x_n) value of the next iteration.
+
+function solve(alg::MFRBSM, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    alg.lambda_minus1 > 0 ||
+        throw(ArgumentError("MFRBSM: lambda_minus1 must be > 0, got $(alg.lambda_minus1)"))
+    alg.lambda_0 > 0 ||
+        throw(ArgumentError("MFRBSM: lambda_0 must be > 0, got $(alg.lambda_0)"))
+    (0 < alg.mu < 0.5) ||
+        throw(ArgumentError("MFRBSM: mu must be in (0, 0.5), got $(alg.mu)"))
+
+    state = SolverState(:MFRBSM, x0)
+    t0    = time()
+
+    Bx_curr       = prob.B(state.x)
+    Bx_prev       = copy(Bx_curr)   # x_{-1} = x_0 = x0
+    state.f_evals = 1
+    lambda_prev   = alg.lambda_minus1
+    lambda_curr   = alg.lambda_0
+    state.step_size = lambda_curr
+
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        x_curr = state.x
+        state.x_prev = copy(x_curr)
+
+        x_next = prob.resolvent_A(
+            x_curr .- lambda_curr .* Bx_curr .- lambda_prev .* (Bx_curr .- Bx_prev),
+            lambda_curr,
+        )
+
+        Bx_next = prob.B(x_next)
+        state.f_evals += 1
+
+        delta_B      = Bx_next .- Bx_curr
+        norm_delta_B = norm(delta_B)
+        norm_step    = norm(x_next .- x_curr)
+        lambda_next  = norm_delta_B > 0 ?
+                       min(lambda_curr, alg.mu * norm_step / norm_delta_B) :
+                       lambda_curr
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = lambda_next
+
+        rho           = lambda_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bx_next, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        Bx_prev     = Bx_curr
+        Bx_curr     = Bx_next
+        lambda_prev = lambda_curr
+        lambda_curr = lambda_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# ============================================================================
+# RFBSM — Relaxed Forward–Backward Splitting Method (Cholamjiak2021 Algorithm 1)
+# ============================================================================
+#
+# Paper notation matches the repo convention directly: A is the set-valued
+# maximal monotone operator and B is the single-valued monotone Lipschitz
+# operator.
+#
+# Iteration:
+#   y_n = J^A_{λ_n}(x_n − λ_n B(x_n))
+#   x_{n+1} = (1−θ)x_n + θ y_n + θ λ_n (B(x_n) − B(y_n))
+#   λ_{n+1} = min{ λ_n, μ ||x_n−y_n|| / ||B(x_n)−B(y_n)|| }
+#
+# B-eval accounting: cache B(x_n) across iterations, so the steady-state cost
+# is 2 B-evals/iter: B(y_n) plus B(x_{n+1}) for the residual block (reused next
+# iteration). This mirrors MTTM's accounting.
+
+function solve(alg::RFBSM, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    alg.lambda_0 > 0 ||
+        throw(ArgumentError("RFBSM: lambda_0 must be > 0, got $(alg.lambda_0)"))
+    (0 < alg.theta <= 1) ||
+        throw(ArgumentError("RFBSM: theta must be in (0, 1], got $(alg.theta)"))
+    (0 < alg.mu < 1) ||
+        throw(ArgumentError("RFBSM: mu must be in (0, 1), got $(alg.mu)"))
+
+    state = SolverState(:RFBSM, x0)
+    t0    = time()
+
+    state.f_evals = 0
+    Bx_curr       = algorithm_B!(state, prob.B, state.x)
+    λ_curr          = alg.lambda_0
+    state.step_size = λ_curr
+
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        x_curr = state.x
+        state.x_prev = copy(x_curr)
+
+        y_n  = prob.resolvent_A(x_curr .- λ_curr .* Bx_curr, λ_curr)
+        By_n = algorithm_B!(state, prob.B, y_n)
+
+        x_next = (1 - alg.theta) .* x_curr .+ alg.theta .* y_n .+
+                 (alg.theta * λ_curr) .* (Bx_curr .- By_n)
+
+        ΔB      = Bx_curr .- By_n
+        norm_ΔB = norm(ΔB)
+        λ_next  = norm_ΔB > 0 ? min(λ_curr, alg.mu * norm(x_curr .- y_n) / norm_ΔB) : λ_curr
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = λ_next
+
+        Bxnext        = algorithm_B!(state, prob.B, x_next)
+        rho           = λ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        Bx_curr = Bxnext
+        λ_curr  = λ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# ============================================================================
+# IRFBSM — Inertial Relaxed Forward–Backward Splitting Method
+#           (Cholamjiak2021 Algorithm 2)
+# ============================================================================
+#
+# Iteration:
+#   w_n = x_n + α(x_n − x_{n−1})
+#   y_n = J^A_{λ_n}(w_n − λ_n B(w_n))
+#   x_{n+1} = (1−θ)w_n + θ y_n + θ λ_n (B(w_n) − B(y_n))
+#   λ_{n+1} = min{ λ_n, μ ||w_n−y_n|| / ||B(w_n)−B(y_n)|| }
+#
+# The paper assumes x_{-1}, x_0 are given. With the repo's one-point solver API
+# we set x_{-1} = x_0 = x0, exactly as we do for the other inertial baselines.
+#
+# B-eval accounting: w_n changes every iteration, so B(w_n) cannot be cached.
+# Per-iter ALGORITHM cost is 2 fresh B-evals: B(w_n) and B(y_n). B(x_{n+1}) in
+# the residual block is monitoring only and is not counted in f_evals.
+
+function solve(alg::IRFBSM, prob::TestProblem, x0::Vector{Float64};
+               stopping::Tuple,
+               observers::Tuple = ())
+
+    alg.lambda_0 > 0 ||
+        throw(ArgumentError("IRFBSM: lambda_0 must be > 0, got $(alg.lambda_0)"))
+    (0 < alg.theta <= 1) ||
+        throw(ArgumentError("IRFBSM: theta must be in (0, 1], got $(alg.theta)"))
+    (0 < alg.mu < 1) ||
+        throw(ArgumentError("IRFBSM: mu must be in (0, 1), got $(alg.mu)"))
+    (0 <= alg.alpha < 1) ||
+        throw(ArgumentError("IRFBSM: alpha must be in [0, 1), got $(alg.alpha)"))
+    K = alg.theta * (1 - alg.mu^2) / (2 - alg.theta + alg.mu * alg.theta)^2 + (1 - alg.theta) / alg.theta
+    lhs_alpha = alg.alpha * (1 + alg.alpha) / (1 - alg.alpha)^2
+    lhs_alpha < K ||
+        throw(ArgumentError("IRFBSM: require alpha(1+alpha)/(1-alpha)^2 < K = $K, got lhs = $(lhs_alpha)"))
+
+    state = SolverState(:IRFBSM, x0)
+    state.f_evals = 0
+    t0    = time()
+
+    x_older = copy(x0)    # x_{-1} = x_0 = x0
+    λ_curr  = alg.lambda_0
+    state.step_size = λ_curr
+
+    for cb in observers
+        on_event!(cb, state, :init)
+    end
+
+    while true
+        x_curr = state.x
+        state.x_prev = copy(x_curr)
+
+        w_n  = x_curr .+ alg.alpha .* (x_curr .- x_older)
+        Bw_n = algorithm_B!(state, prob.B, w_n)
+        y_n  = prob.resolvent_A(w_n .- λ_curr .* Bw_n, λ_curr)
+        By_n = algorithm_B!(state, prob.B, y_n)
+
+        x_next = (1 - alg.theta) .* w_n .+ alg.theta .* y_n .+
+                 (alg.theta * λ_curr) .* (Bw_n .- By_n)
+
+        ΔB      = Bw_n .- By_n
+        norm_ΔB = norm(ΔB)
+        λ_next  = norm_ΔB > 0 ? min(λ_curr, alg.mu * norm(w_n .- y_n) / norm_ΔB) : λ_curr
+
+        state.x         = x_next
+        state.elapsed   = time() - t0
+        state.step_size = λ_next
+
+        # Diagnostic only: this is intentionally NOT part of F-evals.
+        Bxnext        = prob.B(x_next)
+        rho           = λ_next
+        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+        Rn            = norm(x_next .- prox_val)
+        state.residual        = Rn
+        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+
+        state.k += 1
+        for cb in observers
+            on_event!(cb, state, :iter)
+        end
+
+        halted = false
+        for cb in stopping
+            should_stop, reason = check_stop(cb, state)
+            if should_stop
+                state.flag = reason
+                halted     = true
+                break
+            end
+        end
+        halted && break
+
+        x_older = x_curr
+        λ_curr  = λ_next
+    end
+
+    for cb in observers
+        on_event!(cb, state, :terminate)
+    end
+
+    history = IterRecord[]
+    for cb in observers
+        if cb isa HistoryCallback
+            history = cb.history
+            break
+        end
+    end
+
+    return make_result(
+        converged       = state.flag === :converged,
+        iterations      = state.k,
+        f_evals         = state.f_evals,
+        cpu_time        = state.elapsed,
+        x               = state.x,
+        flag            = state.flag,
+        history         = history,
+        residual        = state.residual,
+        scaled_residual = state.scaled_residual,
+    )
+end
+
+# MTTM â€” Mann Tseng-Type Method (Gibali2018 Algorithm 1)
 
 # ============================================================================
 # MTTM — Mann Tseng-Type Method (Gibali2018 Algorithm 1)
@@ -1270,9 +2275,9 @@ function solve(alg::IFRAB, prob::TestProblem, x0::Vector{Float64};
     w_older  = copy(x0)               # w_{n−1}, starts as w_0
 
     # Cached B-values: Bw_n preloaded as B(w_1) = B(x0); Bw_{n−1} := Bw_0 = Bw_1.
-    Bw_curr       = prob.B(state.x)
+    state.f_evals = 0
+    Bw_curr       = algorithm_B!(state, prob.B, state.x)
     Bw_prev       = Bw_curr           # alias safe (never mutated in place)
-    state.f_evals = 1
 
     # Steps: δ_n starts at δ_1; δ_{n−1} starts at δ_0.
     δ_curr          = alg.delta_1
@@ -1308,8 +2313,7 @@ function solve(alg::IFRAB, prob::TestProblem, x0::Vector{Float64};
         w_next   = prob.resolvent_A(arg, δ_curr)
 
         # ── One fresh B-eval: B(w_{n+1}) (stepsize + residual + next cache) ─
-        Bw_next       = prob.B(w_next)
-        state.f_evals += 1
+        Bw_next       = algorithm_B!(state, prob.B, w_next)
 
         # ── Adaptive (non-monotone) stepsize update (Izuchukwu eq 3.2) ───
         Δw      = w_n .- w_next
