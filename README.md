@@ -21,7 +21,7 @@ Q. H. Ansari (KFUPM Department of Mathematics / IRC-MOIN).
 
 ## What this repository contains
 - A source-verified implementation of EPCM, EFBFP, AEFBFP (proposed) and four reference solvers.
-- Four monotone-inclusion test problems drawn from the recent splitting literature.
+- Five monotone-inclusion test problems drawn from the recent splitting literature.
 - A reproducible benchmark pipeline (SQLite-backed experiment database, parameter
   tuning via Latin-hypercube search, source-paper validation, a full sweep, and the
   paper's figures/tables).
@@ -47,8 +47,9 @@ Q. H. Ansari (KFUPM Department of Mathematics / IRC-MOIN).
 | P2 | Yao–Adamu–Shehu, 2024 (§4.2) | $\ell_1$ + quadratic, $L=2$ |
 | P3 | Izuchukwu et al., 2023 (§6.2) | box-constrained, **rank-1** $B = 2h\,\mathbf{1}\mathbf{1}^\top$ |
 | P4 | Tan–Cho, 2022 (§5.3) | LASSO, $C$ underdetermined, $L=1$ |
+| P5 | Example 4.2 (ℓ₂ truncation) | monotone inclusion with $A=2I$, $B(x)=x_+$, $L=1$ |
 
-## Benchmark findings (current)
+## Benchmark findings (current P1–P4 production sweep)
 
 Full tuned-vs-tuned sweep (`s30`; uniform native tolerance $10^{-6}$, budget $6000$;
 0 errors), with all proposed methods run at parameters **inside the proven admissible
@@ -68,6 +69,8 @@ tolerance** over converged seeds $\times$ dimensions (`converged / total`):
 `DNC` = no convergence within the budget on a majority of instances.
 `*` MTTM/IMTTM are unusually fast on P1 only through near-trivial feasibility of the
 initialization (MTTM/P1 is excluded as an artifact).
+`P5` is integrated in the codebase and benchmark pipeline; its dedicated tuning and
+comparison pass is tracked separately from the current P1–P4 production table.
 
 Highlights:
 - **AEFBFP wins P3 and P4**, beating the nearest single-call competitor IFRAB on both

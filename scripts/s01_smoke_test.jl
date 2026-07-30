@@ -1,23 +1,23 @@
 # ============================================================================
-# s01: Smoke Test — verify ALL FIVE solvers run end-to-end on small instances
+# s01: Smoke Test — verify all current smoke-listed solvers run end-to-end
 # ============================================================================
 #
 # Sanity check that exercises every layer of the stack across the full
-# 5-solver × 3-problem matrix at the smallest dimension of each problem
-# (P1 m=5, P2 m=100, P3 K=100), seed1, maxiter = 100:
+# current smoke-listed solver × 5-problem matrix at the smallest dimension of each problem
+# (P1 N=32, P2 m=100, P3 K=100, P4 N=64, P5 N=64), seed1, maxiter = 100:
 #
-#   Section 1 : Build the three problems (smallest dim each); report name/dim/L.
-#   Section 2 : solve() matrix — EPCM, MTTM, IMTTM, SFRBM, IFRAB on P1, P2, P3
-#               (15 cells). Each solver uses its per-problem preset :P{k}.
+#   Section 1 : Build the five problems (smallest dim each); report name/dim/L.
+#   Section 2 : solve() matrix — current smoke-listed solvers on P1–P5.
+#               Each solver uses its per-problem preset :P{k}.
 #               Reports converged?, flag, iters, B-evals, both residuals, native.
 #               Asserts each cell returns a SolverResult with a valid flag
 #               (it does NOT assert convergence — see note below). The P2
 #               soft-thresholding resolvent exercises the ρ-dependent resolvent
 #               path that P1/P3 (clip, ρ-independent) do not.
-#   Section 3 : Config-hash uniqueness — all 5×3 = 15 (method × problem) configs
+#   Section 3 : Config-hash uniqueness — all (method × problem) configs
 #               must hash distinctly; plus within-EPCM preset distinctness and
 #               prob_id-participates-in-hash micro-checks.
-#   Section 4 : DB integration — ensure_config!/insert_result! for all 15 cells,
+#   Section 4 : DB integration — ensure_config!/insert_result! for all 25 cells,
 #               insert_history! once (method-agnostic IterRecord path), and
 #               is_done + script-discriminator checks. Rows tagged script="s01"
 #               so smoke data stays out of the s30 benchmark namespace.
@@ -34,10 +34,10 @@
 
 include(joinpath(@__DIR__, "..", "src", "includes.jl"))
 
-# Algorithm types in canonical reporting order. Each exposes :P1/:P2/:P3 presets
-# (EPCM has no :paper; the four baselines do, but the smoke uses the per-problem
+# Algorithm types in canonical reporting order. Each exposes :P1/:P2/:P3/:P4/:P5 presets
+# (EPCM has no :paper; the baseline competitors do, but the smoke uses the per-problem
 # presets so every cell is a valid (method, problem) configuration).
-const SMOKE_ALG_TYPES = (EPCM, MTTM, IMTTM, SFRBM, IFRAB)
+const SMOKE_ALG_TYPES = (EPCM, MAEFBFP, MTTM, IMTTM, SFRBM, IFRAB, VAFBS, MDITSM, MFRBSM, RFBSM, IRFBSM)
 
 # Stopping uses each problem's NATIVE source-paper criterion (D1) via
 # NativeResStopping(prob.native_residual, native_tol(label)) — native_tol from
@@ -49,13 +49,13 @@ function main()
     logpath, tee, _ = setup_logging("smoke_test")
 
     println(tee, "=" ^ 75)
-    println(tee, "  EPCMMIP Smoke Test — 5 solvers × 4 problems  $(Dates.now())")
+    println(tee, "  EPCMMIP Smoke Test — $(length(SMOKE_ALG_TYPES)) solvers × 5 problems  $(Dates.now())")
     println(tee, "=" ^ 75)
 
     all_ok = true
 
     # ══════════════════════════════════════════════════════════════════════
-    # Section 1: Build the four problems (smallest dim each)
+# Section 1: Build the five problems (smallest dim each)
     # ══════════════════════════════════════════════════════════════════════
     println(tee, "\n--- Section 1: Problem setup (smallest dim per problem) ---")
     problems = NamedTuple[]
@@ -64,6 +64,7 @@ function main()
         push!(problems, (id = 2, label = "P2", prob = get_problem(2; dim = 100, n_seeds = 3)))
         push!(problems, (id = 3, label = "P3", prob = get_problem(3;            n_seeds = 3)))
         push!(problems, (id = 4, label = "P4", prob = get_problem(4; dim = 64,  n_seeds = 3)))
+        push!(problems, (id = 5, label = "P5", prob = get_problem(5; dim = 64,  n_seeds = 3)))
         for p in problems
             @printf(tee, "  %-3s %-22s dim=%-4d L=%.4f  init_pts=%d\n",
                     p.label, p.prob.name, p.prob.dim, p.prob.metadata.L,
@@ -76,9 +77,9 @@ function main()
     end
 
     # ══════════════════════════════════════════════════════════════════════
-    # Section 2: solve() matrix — 5 solvers × 3 problems
+    # Section 2: solve() matrix — all registered solvers × 5 problems
     # ══════════════════════════════════════════════════════════════════════
-    println(tee, "\n--- Section 2: solve() matrix — 5 solvers × 4 problems ---")
+    println(tee, "\n--- Section 2: solve() matrix — $(length(SMOKE_ALG_TYPES)) solvers × 5 problems ---")
     cells = NamedTuple[]
     n_expected_cells = length(SMOKE_ALG_TYPES) * length(problems)
     if !isempty(problems)
@@ -132,8 +133,8 @@ function main()
         @printf(tee, "\n  %d/%d cells returned a valid SolverResult.\n",
                 length(cells), n_expected_cells)
         println(tee, "  Note: convergence is NOT asserted (smoke maxiter=100; stop = native criterion).")
-        println(tee, "        native: P1 E_n=‖(I−P_C)x‖²+‖Bx‖² · P2/P4 ‖x−x_prev‖ · P3 0.5‖z−clip(z−Bz)‖².")
-        println(tee, "        (P1=Volterra SFP, P2=ℓ1+quad, P3=control, P4=LASSO.)")
+        println(tee, "        native: P1 E_n=‖(I−P_C)x‖²+‖Bx‖² · P2/P4 ‖x−x_prev‖ · P3 0.5‖z−clip(z−Bz)‖² · P5 ‖x−J^A_1(x−Bx)‖.")
+        println(tee, "        (P1=Volterra SFP, P2=ℓ1+quad, P3=control, P4=LASSO, P5=ℓ₂ positive-part example.)")
     end
 
     # ══════════════════════════════════════════════════════════════════════
@@ -141,7 +142,7 @@ function main()
     # ══════════════════════════════════════════════════════════════════════
     println(tee, "\n--- Section 3: Config-hash sanity ---")
     try
-        # (a) All 20 (method × problem) configs must hash distinctly. The
+        # (a) All (method × problem) configs must hash distinctly. The
         # convergence tolerance fed to the hash is the problem's native_tol (D1).
         cell_hashes = Tuple{String,String,String}[]   # (method, problem, hash)
         for p in problems
@@ -164,14 +165,14 @@ function main()
             end
         end
 
-        # (b) EPCM :P1/:P2/:P3/:P4 must be distinct (per-problem τ_0 differs).
+        # (b) EPCM :P1/:P2/:P3/:P4/:P5 must be distinct (per-problem τ_0 may differ).
         epcm_h = [make_config_hash(EPCM(pp), string(pp), native_tol(string(pp)), SMOKE_MAXITER)[1]
-                  for pp in (:P1, :P2, :P3, :P4)]
-        if length(unique(epcm_h)) == 4
-            println(tee, "  EPCM :P1/:P2/:P3/:P4 distinct: PASS")
+                  for pp in (:P1, :P2, :P3, :P4, :P5)]
+        if length(unique(epcm_h)) == 5
+            println(tee, "  EPCM :P1/:P2/:P3/:P4/:P5 distinct: PASS")
         else
             all_ok = false
-            println(tee, "  EPCM :P1/:P2/:P3/:P4 distinct: FAIL")
+            println(tee, "  EPCM :P1/:P2/:P3/:P4/:P5 distinct: FAIL")
         end
 
         # (c) prob_id participates in the hash (same alg+params+eps, different prob).

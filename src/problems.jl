@@ -1,7 +1,7 @@
 # problems.jl — Test-problem definitions for the EPCMMIP benchmark.
 #
 # Defines the `InitialPoint` and parametric `TestProblem{B,R,Res,Meta}` structs,
-# the three problem builders (P1, P2, P3), the public dispatcher `get_problem`,
+# the five problem builders (P1-P5), the public dispatcher `get_problem`,
 # and the deterministic seed combinator used to generate initial points.
 #
 # Design references:
@@ -13,7 +13,8 @@
 # `resolvent_A`'s `ρ` argument is honoured by P2 and P4 (soft-thresholding);
 # P1 (Volterra SFP half-space proj) and P3 (box) use normal-cone resolvents that
 # are `ρ`-independent. Suite (revised 2026-05-28): P1 = Tan Ex5.2 Volterra SFP,
-# P2 = Yao Ex4.2 ℓ1+quad, P3 = Izuchukwu Ex6.2 control, P4 = Tan Ex5.3 LASSO.
+# P2 = Yao Ex4.2 ℓ1+quad, P3 = Izuchukwu Ex6.2 control, P4 = Tan Ex5.3 LASSO,
+# P5 = ℓ₂ monotone inclusion with A = 2I and B = x₊.
 #
 # `problems.jl` is included AFTER `resolvents.jl` (`clipping_box`,
 # `soft_thresholding`) and BEFORE `algorithm_types.jl`. It does NOT know
@@ -53,10 +54,10 @@ Parametric on the concrete types of the functor fields so solver methods
 specialise per problem and dispatch is fully concrete in the hot loop.
 
 Fields:
-- `id::Int`           — `1`, `2`, or `3` (matches `PROBLEM_IDS`).
+- `id::Int`           — problem ID (matches `PROBLEM_IDS`).
 - `name::String`      — descriptive, e.g. `"Tan2022a_Ex5.1"`.
 - `dim::Int`          — problem dimension.
-- `B::B`              — closure `x → Bx` (single-valued operator).
+- `B::B`              — closwhat ure `x → Bx` (single-valued operator).
 - `resolvent_A::R`    — closure `(x, ρ) → J^A_ρ(x)`. `ρ` argument is ignored
                          for P1 and P3 (normal-cone resolvents are `ρ`-indep).
 - `native_residual::Res` — closure `(x, x_prev) → Float64` (each problem's
@@ -65,14 +66,16 @@ Fields:
                          * P2: `‖x − x_prev‖` (Inf if `x_prev` empty)
                          * P3: `0.5 ‖z − clip_{[-1,1]}(z − B(z))‖²`
                          * P4 (LASSO): `‖x − x_prev‖` (Inf if `x_prev` empty)
+                         * P5 (ℓ₂ example): `‖x − J^A_1(x − B(x))‖`
 - `exact_x::Union{Vector{Float64},Nothing}` — known optimum if available
                          (P1: zeros; P3: bang-bang; P4: planted signal; P2: nothing).
 - `initial_points::Vector{InitialPoint}` — pre-generated initial iterates.
 - `metadata::Meta`    — NamedTuple of problem-specific extras
                          (P1: `(L, N, h, t)`; P2: `(b, L)`; P3: `(c, L, K, h, M_factor)`;
-                          P4: `(C, y, gamma, L, M, k, x_star)`).
+                          P4: `(C, y, gamma, L, M, k, x_star)`;
+                          P5: `(L, N)`).
 
-**Invariant**: `prob.metadata.L::Float64` is present on all three builders
+**Invariant**: `prob.metadata.L::Float64` is present on all builders
 and is the canonical Lipschitz constant of `B`. Algorithm types in Step 4.5
 that need an `L` estimate for default step-size rules read it here.
 """
@@ -92,7 +95,7 @@ end
 Suite revised 2026-05-28: P1=Volterra SFP (Tan Ex5.2), P2=ℓ1+quad (Yao Ex4.2),
 P3=optimal control (Izuchukwu Ex6.2), P4=LASSO (Tan Ex5.3). The old box-VIP
 (Tan Ex5.1) was dropped — EPCM's ill-conditioned worst case (see plan_review_findings D2)."
-const PROBLEM_IDS = [1, 2, 3, 4]
+const PROBLEM_IDS = [1, 2, 3, 4, 5]
 
 # ============================================================================
 # Deterministic seed combinator
@@ -121,7 +124,7 @@ function _make_rng(pid::Int, dim::Int, seed_idx::Int)
 end
 
 # ============================================================================
-# Problem 1: Tan2022a Example 5.2 — Volterra split-feasibility in L²([0,1])
+# Problem 1: Tan2022a Example 5.2lekin jab hum  — Volterra split-feasibility in L²([0,1])
 # ============================================================================
 #
 # Find x ∈ C with Tx ∈ Q, where
@@ -241,12 +244,16 @@ end
 """
     _build_problem2(dim::Int; n_seeds::Int=10) -> TestProblem
 
-Build P2 at dimension `m = dim`. Generates `b ~ N(0, I)` from the per-(2, dim, 0)
-RNG (reproducible) and `n_seeds` initial points sampled from `N(0, I_m)`.
+Build P2 at dimension `m = dim`.
 
-`n_seeds` defaults to **10** (matches Q5 post-review for P2).
+Generates `b ~ N(0, I)` from the per-(2, dim, 0) RNG reproducibly, and
+generates `n_seeds` initial points sampled from `N(0, I_m)`.
+
+`n_seeds` defaults to 10.
 """
 function _build_problem2(dim::Int; n_seeds::Int=10)
+
+    # --- Basic input checks ---
     dim >= 1 || throw(ArgumentError("_build_problem2: dim must be >= 1, got $dim"))
     n_seeds >= 1 || throw(ArgumentError("_build_problem2: n_seeds must be >= 1, got $n_seeds"))
 
@@ -254,30 +261,40 @@ function _build_problem2(dim::Int; n_seeds::Int=10)
     data_rng = _make_rng(2, dim, 0)
     b = randn(data_rng, dim)
 
+    # Lipschitz constant of B(x) = 2x + b
     L = 2.0
 
     # --- Operators ---
-    B_fn           = let b = b;            x -> 2.0 .* x .+ b;               end
+    B_fn = let b = b
+        x -> 2.0 .* x .+ b
+    end
+
     resolvent_A_fn = (x, ρ) -> soft_thresholding(x, ρ)
-    # Native residual e_n = ‖x_{n+1} − x_n‖. At :init (x_prev empty) return Inf
-    # as a sentinel — observer fires :terminate after at least one :iter for
-    # any non-degenerate run, but the guard prevents a length-mismatch crash.
+
+    # Native residual e_n = ‖x_{n+1} - x_n‖.
+    # At initialization, x_prev may be empty, so return Inf as a safe sentinel.
     native_res_fn = (x, x_prev) -> isempty(x_prev) ? Inf : norm(x .- x_prev)
 
     # --- Initial points: n_seeds Gaussian draws ---
     initial_points = InitialPoint[]
+
     for n in 1:n_seeds
         rng = _make_rng(2, dim, n)
         x0 = randn(rng, dim)
         push!(initial_points, InitialPoint("seed$n", n, x0))
     end
 
+    # --- Metadata ---
     metadata = (b = b, L = L)
 
     return TestProblem(
-        2, "Yao2024_Ex4.2", dim,
-        B_fn, resolvent_A_fn, native_res_fn,
-        nothing,                                               # no closed-form x*
+        2,
+        "Yao2024_Ex4.2",
+        dim,
+        B_fn,
+        resolvent_A_fn,
+        native_res_fn,
+        nothing,          # no closed-form x*
         initial_points,
         metadata,
     )
@@ -452,6 +469,65 @@ function _build_problem4(dim::Int; n_seeds::Int=10, gamma::Float64=1.0e-3)
     )
 end
 
+
+
+# ============================================================================
+# Problem 5: ℓ₂ monotone inclusion with A = 2I and B = x₊
+# ============================================================================
+#
+# Hilbert-space example on ℓ₂(ℝ):
+#   A(x) = 2x
+#   B(x) = ((x_i + |x_i|)/2)_i = x₊
+#
+# The infinite-dimensional example is benchmarked through its finite-dimensional
+# truncation to ℝᴺ, where `dim = N` is the number of retained coordinates. The
+# inclusion 0 ∈ A(x) + B(x) has the unique solution x* = 0.
+#
+# Resolvent:
+#   J^A_ρ(u) = (I + ρA)⁻¹ u = u / (1 + 2ρ)
+#
+# Since the source example does not prescribe a separate native stopping
+# quantity, we use the fixed-point residual at ρ = 1:
+#   ‖x - J^A_1(x - B(x))‖.
+
+"""
+    _build_problem5(dim::Int; n_seeds::Int=10) -> TestProblem
+
+Build the finite-dimensional truncation of the ℓ₂ monotone-inclusion example
+with `A = 2I` and `B = x₊`. Here `dim = N` is the number of coordinates kept
+from the ambient ℓ₂ space. The exact solution is `x* = 0`.
+"""
+function _build_problem5(dim::Int; n_seeds::Int=10)
+    dim >= 1 || throw(ArgumentError("_build_problem5: dim must be >= 1, got $dim"))
+    n_seeds >= 1 || throw(ArgumentError("_build_problem5: n_seeds must be >= 1, got $n_seeds"))
+
+    N = dim
+    L = 1.0
+
+    B_fn = x -> 0.5 .* (x .+ abs.(x))
+    resolvent_A_fn = (x, ρ) -> x ./ (1.0 + 2.0 * ρ)
+    native_res_fn = let B_fn = B_fn, resolvent_A_fn = resolvent_A_fn
+        (x, x_prev) -> norm(x .- resolvent_A_fn(x .- B_fn(x), 1.0))
+    end
+
+    initial_points = InitialPoint[]
+    for n in 1:n_seeds
+        rng = _make_rng(5, dim, n)
+        x0 = randn(rng, N)
+        push!(initial_points, InitialPoint("seed$n", n, x0))
+    end
+
+    metadata = (L = L, N = N)
+
+    return TestProblem(
+        5, "Example4.2_l2_positivepart", N,
+        B_fn, resolvent_A_fn, native_res_fn,
+        zeros(N),
+        initial_points,
+        metadata,
+    )
+end
+
 # ============================================================================
 # Public dispatcher + accessors
 # ============================================================================
@@ -459,17 +535,18 @@ end
 """
     get_problem(id::Int; dim::Int=0, n_seeds::Int=(id == 3 ? 20 : 10)) -> TestProblem
 
-Build and return the test problem identified by `id ∈ PROBLEM_IDS = [1, 2, 3, 4]`
+Build and return the test problem identified by `id ∈ PROBLEM_IDS = [1, 2, 3, 4, 5]`
 at the given dimension.
 
 - **P1** (Volterra SFP): `dim = N` is the grid resolution (`dim ≥ 2`).
 - **P2** (ℓ1+quad): `dim = m ≥ 1`.
 - **P3** (optimal control): `dim = K` Euler nodes (`dim ≥ 10`; `0` ⇒ `K = 100`).
 - **P4** (LASSO): `dim = N` is the signal length (`dim ≥ 4`); `M = N÷2`.
+- **P5** (ℓ₂ example): `dim = N ≥ 1` is the truncation length.
 
 `n_seeds` controls the number of generated initial points. The default
 depends on `id`: **20** for P3 (single dim, more seeds → less noisy profile)
-and **10** for P1/P2/P4 (multiple dims each). Override for `--quick` runs.
+and **10** for P1/P2/P4/P5 (multiple dims each). Override for `--quick` runs.
 
 Re-generates data and initial points from the deterministic seed combinator
 on every call, so calls with the same `(id, dim, n_seeds)` return
@@ -481,7 +558,462 @@ function get_problem(id::Int; dim::Int = 0, n_seeds::Int = (id == 3 ? 20 : 10))
     id == 2 && return _build_problem2(dim; n_seeds=n_seeds)
     id == 3 && return _build_problem3(dim; n_seeds=n_seeds)
     id == 4 && return _build_problem4(dim; n_seeds=n_seeds)
+    id == 5 && return _build_problem5(dim; n_seeds=n_seeds)
     throw(ArgumentError("Unknown problem id: $id. Known: $PROBLEM_IDS"))
+end
+
+
+
+
+
+using Random
+using LinearAlgebra
+
+
+# ============================================================================
+# BUILD_SPARSE_LOGISTIC_TRUE
+#
+# Build a synthetic sparse logistic-regression problem:
+#
+#     minimize  Φ(x) = f(x) + rho ||x||₁,
+#
+# where
+#
+#     f(x) = (1/N) sum_i log(1 + exp(-b_i a_i'x)).
+#
+# Its monotone-inclusion formulation is
+#
+#     0 ∈ A(x) + B(x),
+#
+# where
+#
+#     A = ∂(rho ||·||₁),
+#     B = ∇f.
+#
+# The synthetic data are generated using a hidden sparse vector x_true:
+#
+#     1. Generate X ∈ R^(N×m).
+#     2. Generate `sparsity` nonzero coefficients.
+#     3. Append zeros and randomly permute the complete vector.
+#     4. Form scores = X*x_true.
+#     5. Set b_i = +1 if score_i ≥ 0 and -1 otherwise.
+#
+# The solver receives B, the resolvent of A, the native residual and the
+# initial points. The hidden vector x_true is stored only in metadata for
+# evaluating coefficient and support recovery.
+#
+# Inputs:
+#   dim          - Int; number of features and dimension of x
+#   n_samples    - Int; number of data samples
+#   sparsity     - Int; number of nonzero entries in x_true
+#   rho          - Float64; ℓ₁-regularization parameter
+#   n_seeds      - Int; number of initial points used in the benchmark
+#   seed         - Int; data-generation seed index passed to _make_rng
+#   problem_id   - Int; unique problem identifier used by TestProblem
+#
+# Outputs:
+#   TestProblem containing:
+#     B_fn            - logistic-gradient operator
+#     resolvent_A_fn  - soft-thresholding resolvent
+#     native_res_fn   - fixed-point residual
+#     initial_points  - seeded initial points
+#     metadata        - generated data and diagnostic information
+#
+# Metadata:
+#   X                - data matrix of size N × m
+#   b                - labels in {-1,+1}
+#   x_true           - hidden sparse coefficient vector
+#   x_unpermuted     - sparse vector before permutation
+#   nonzero_values   - generated nonzero coefficients
+#   permutation      - permutation used to construct x_true
+#   support          - nonzero positions of x_true
+#   nnz_true         - actual number of nonzero entries
+#   rho              - regularization parameter
+#   L                - Lipschitz constant of B
+#   N                - number of samples
+#   m                - number of features
+#   sparsity         - requested sparsity
+#   loss_fn          - smooth logistic-loss function
+#   objective_fn     - complete objective function
+# ============================================================================
+
+
+"""
+    _softplus_stable(t)
+
+Numerically stable evaluation of
+
+    log(1 + exp(t)).
+"""
+@inline function _softplus_stable(t::Float64)
+    return max(t, 0.0) + log1p(exp(-abs(t)))
+end
+
+
+"""
+    _inverse_logistic_stable(t)
+
+Numerically stable evaluation of
+
+    1 / (1 + exp(t)).
+
+This quantity appears in the gradient of
+
+    log(1 + exp(-bᵢ aᵢ'x)).
+"""
+@inline function _inverse_logistic_stable(t::Float64)
+
+    if t >= 0.0
+        et = exp(-t)
+        return et / (1.0 + et)
+    else
+        et = exp(t)
+        return 1.0 / (1.0 + et)
+    end
+end
+
+
+function _build_sparse_logistic_true(
+    dim::Int;
+    n_samples::Int = 5 * dim,
+    sparsity::Int = max(1, dim ÷ 10),
+    rho::Float64 = 1.0e-3,
+    n_seeds::Int = 10,
+    seed::Int = 0,
+    problem_id::Int = 61,
+)
+
+    # ------------------------------------------------------------------------
+    # 1. Validate inputs
+    # ------------------------------------------------------------------------
+
+    dim >= 1 ||
+        throw(ArgumentError(
+            "_build_sparse_logistic_true: dim must be positive, got $dim."
+        ))
+
+    n_samples >= 1 ||
+        throw(ArgumentError(
+            "_build_sparse_logistic_true: n_samples must be positive, " *
+            "got $n_samples."
+        ))
+
+    1 <= sparsity <= dim ||
+        throw(ArgumentError(
+            "_build_sparse_logistic_true: sparsity must satisfy " *
+            "1 ≤ sparsity ≤ dim; got sparsity=$sparsity and dim=$dim."
+        ))
+
+    rho >= 0.0 ||
+        throw(ArgumentError(
+            "_build_sparse_logistic_true: rho must be nonnegative, got $rho."
+        ))
+
+    n_seeds >= 1 ||
+        throw(ArgumentError(
+            "_build_sparse_logistic_true: n_seeds must be at least 1, " *
+            "got $n_seeds."
+        ))
+
+
+    # ------------------------------------------------------------------------
+    # 2. Set dimensions
+    # ------------------------------------------------------------------------
+
+    m = dim
+    N = n_samples
+
+    data_rng = _make_rng(problem_id, dim, seed)
+
+
+    # ------------------------------------------------------------------------
+    # 3. Generate the data matrix
+    #
+    #     X ∈ R^(N×m).
+    #
+    # Rows represent samples and columns represent features.
+    # ------------------------------------------------------------------------
+
+    X = randn(data_rng, N, m)
+
+
+    # ------------------------------------------------------------------------
+    # 4. Generate the hidden sparse vector through permutation
+    # ------------------------------------------------------------------------
+
+    # Generate exactly `sparsity` coefficient values.
+    nonzero_values = randn(data_rng, sparsity)
+
+    # Initially place the nonzero values first and append zeros:
+    #
+    #     x_unpermuted
+    #       = [c₁, ..., c_sparsity, 0, ..., 0]'.
+    #
+    x_unpermuted = vcat(
+        nonzero_values,
+        zeros(m - sparsity),
+    )
+
+    # Random permutation of 1,2,...,m.
+    permutation = randperm(data_rng, m)
+
+    # Rearrange the complete vector.
+    x_true = x_unpermuted[permutation]
+
+    # Nonzero positions of the final sparse vector.
+    support = findall(!iszero, x_true)
+
+    # Actual number of nonzero entries.
+    nnz_true = count(!iszero, x_true)
+
+
+    # ------------------------------------------------------------------------
+    # 5. Generate class labels from x_true
+    #
+    #     score_i = a_i'x_true,
+    #
+    #     b_i = +1,  if score_i ≥ 0,
+    #           -1,  otherwise.
+    # ------------------------------------------------------------------------
+
+    scores = X * x_true
+
+    b = ifelse.(scores .>= 0.0, 1.0, -1.0)
+
+
+    # ------------------------------------------------------------------------
+    # 6. Define the smooth logistic-loss function
+    #
+    #     f(x)
+    #       = (1/N) sum_i log(1 + exp(-b_i a_i'x)).
+    # ------------------------------------------------------------------------
+
+    loss_fn = let X = X, b = b, N = N, m = m
+
+        x -> begin
+
+            length(x) == m ||
+                throw(DimensionMismatch(
+                    "loss_fn: x must have length $m, " *
+                    "got length $(length(x))."
+                ))
+
+            margins = b .* (X * x)
+
+            total_loss = 0.0
+
+            @inbounds for i in eachindex(margins)
+                total_loss += _softplus_stable(-margins[i])
+            end
+
+            return total_loss / N
+        end
+    end
+
+
+    # ------------------------------------------------------------------------
+    # 7. Define B(x) = ∇f(x)
+    #
+    #     B(x)
+    #       = -(1/N) X'[
+    #           b ./ (1 + exp(b .* (X*x)))
+    #         ].
+    # ------------------------------------------------------------------------
+
+    B_fn = let X = X, b = b, N = N, m = m
+
+        x -> begin
+
+            length(x) == m ||
+                throw(DimensionMismatch(
+                    "B_fn: x must have length $m, " *
+                    "got length $(length(x))."
+                ))
+
+            margins = b .* (X * x)
+
+            weights = similar(margins)
+
+            @inbounds for i in eachindex(margins)
+                weights[i] =
+                    _inverse_logistic_stable(margins[i])
+            end
+
+            return -(X' * (b .* weights)) / N
+        end
+    end
+
+
+    # ------------------------------------------------------------------------
+    # 8. Define the resolvent of A = ∂(rho ||·||₁)
+    #
+    # For an algorithmic stepsize λ > 0,
+    #
+    #     J^A_λ(v)
+    #       = prox_{λ rho ||·||₁}(v)
+    #       = soft_thresholding(v, λ*rho).
+    # ------------------------------------------------------------------------
+
+    resolvent_A_fn = let rho = rho, m = m
+
+        (v, λ) -> begin
+
+            length(v) == m ||
+                throw(DimensionMismatch(
+                    "resolvent_A_fn: v must have length $m, " *
+                    "got length $(length(v))."
+                ))
+
+            λ > 0.0 ||
+                throw(ArgumentError(
+                    "resolvent_A_fn: λ must be positive, got $λ."
+                ))
+
+            return soft_thresholding(v, λ * rho)
+        end
+    end
+
+
+    # ------------------------------------------------------------------------
+    # 9. Define the complete objective
+    #
+    #     Φ(x) = f(x) + rho ||x||₁.
+    # ------------------------------------------------------------------------
+
+    objective_fn = let loss_fn = loss_fn, rho = rho
+
+        x -> loss_fn(x) + rho * norm(x, 1)
+    end
+
+
+    # ------------------------------------------------------------------------
+    # 10. Calculate a Lipschitz constant of B
+    #
+    # Since the loss is averaged over N samples,
+    #
+    #     L = ||X||₂²/(4N).
+    # ------------------------------------------------------------------------
+
+    X_opnorm = opnorm(X, 2)
+
+    L = 0.25 * X_opnorm^2 / N
+
+
+    # ------------------------------------------------------------------------
+    # 11. Define the native fixed-point residual
+    #
+    # At stepsize λ = 1,
+    #
+    #     R(x)
+    #       = ||x - J^A_1(x - B(x))||.
+    #
+    # The second argument x_prev is required by the TestProblem interface,
+    # but is not needed for this residual.
+    # ------------------------------------------------------------------------
+
+    native_res_fn =
+        let B_fn = B_fn,
+            resolvent_A_fn = resolvent_A_fn
+
+            (x, x_prev) -> begin
+
+                proximal_point =
+                    resolvent_A_fn(
+                        x .- B_fn(x),
+                        1.0,
+                    )
+
+                return norm(x .- proximal_point)
+            end
+        end
+
+
+    # ------------------------------------------------------------------------
+    # 12. Generate benchmark initial points
+    #
+    # Each initial point is sampled uniformly from [-1,1]^m.
+    # ------------------------------------------------------------------------
+
+    initial_points = InitialPoint[]
+
+    for initial_seed in 1:n_seeds
+
+        rng = _make_rng(
+            problem_id,
+            dim,
+            initial_seed,
+        )
+
+        x0 =
+            -1.0 .+
+            2.0 .* rand(rng, m)
+
+        push!(
+            initial_points,
+            InitialPoint(
+                "seed$initial_seed",
+                initial_seed,
+                x0,
+            ),
+        )
+    end
+
+
+    # ------------------------------------------------------------------------
+    # 13. Store generated data and diagnostic quantities
+    # ------------------------------------------------------------------------
+
+    metadata = (
+        X = X,
+        b = b,
+
+        x_true = x_true,
+        x_unpermuted = x_unpermuted,
+        nonzero_values = nonzero_values,
+        permutation = permutation,
+        support = support,
+        nnz_true = nnz_true,
+
+        rho = rho,
+        L = L,
+
+        N = N,
+        m = m,
+        sparsity = sparsity,
+
+        seed = seed,
+        problem_id = problem_id,
+
+        loss_fn = loss_fn,
+        objective_fn = objective_fn,
+    )
+
+
+    # ------------------------------------------------------------------------
+    # 14. Return the repository-compatible TestProblem
+    # ------------------------------------------------------------------------
+
+    return TestProblem(
+        problem_id,
+        "SparseLogisticTrue_L1",
+        m,
+        B_fn,
+        resolvent_A_fn,
+        native_res_fn,
+        nothing,
+        initial_points,
+        metadata,
+    )
+end
+"""
+    get_sparse_logistic_problem(; dim::Int=1024, n_seeds::Int=10, rho_scale::Float64=5.0e-3) -> TestProblem
+
+Named accessor for the sparse ℓ1-regularized logistic-regression problem.
+Provided separately from `get_problem(id, ...)` so the benchmark's numbered
+suite remains unchanged.
+"""
+function get_sparse_logistic_problem(; dim::Int=1024, n_seeds::Int=10, rho_scale::Float64=5.0e-3)
+    return _build_sparse_logistic(dim; n_seeds=n_seeds, rho_scale=rho_scale)
 end
 
 """

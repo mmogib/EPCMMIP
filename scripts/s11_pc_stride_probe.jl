@@ -31,7 +31,7 @@
 #
 # Usage:
 #   julia --project=jcode jcode/scripts/s11_pc_stride_probe.jl
-#   julia --project=jcode jcode/scripts/s11_pc_stride_probe.jl --maxiter=20000 --problems=P2,P3,P4
+#   julia --project=jcode jcode/scripts/s11_pc_stride_probe.jl --maxiter=20000 --problems=P2,P3,P4,P5
 #   julia --project=jcode jcode/scripts/s11_pc_stride_probe.jl --vartheta0=0.40 --vartheta1=0.39   # bigger-step variant
 # Output: console + results/logs/log_pc_stride_probe_<ts>.txt + results/pc_probe/traj_<P>.csv
 
@@ -171,9 +171,11 @@ function main()
     maxiter = parse(Int, getarg("--maxiter", "10000"))
     v0_ovr  = getarg("--vartheta0", "")
     v1_ovr  = getarg("--vartheta1", "")
-    probsel = getarg("--problems", "P1,P2,P3,P4")
+    probsel = getarg("--problems", "P1,P2,P3,P4,P5")
     wanted  = Set(String.(strip.(split(probsel, ","))))
     wlist   = join(sort(collect(wanted)), ",")
+    allp    = Set(["P1", "P2", "P3", "P4", "P5"])
+    all(p -> p in allp, wanted) || error("--problems entries must be among P1|P2|P3|P4|P5")
 
     println(tee, "=" ^ 78)
     println(tee, "  s11 PC-stride probe — does the projection–contraction step accelerate?  $(Dates.now())")
@@ -181,7 +183,7 @@ function main()
     println(tee, "  maxiter=$maxiter  problems=$wlist" *
                  (isempty(v0_ovr) ? "" : "  vartheta0=$v0_ovr") *
                  (isempty(v1_ovr) ? "" : "  vartheta1=$v1_ovr"))
-    println(tee, "  Hypothesis: P3 (rank-1 operator variation) shows the LARGEST θ_k / stride; P2,P4 hug 1.")
+    println(tee, "  Hypothesis: P3 (rank-1 operator variation) shows the LARGEST θ_k / stride; P2/P4/P5 should hug 1.")
     println(tee, "  Logging the REAL EPCM (v1.2.0) iteration; CSV trajectories under results/pc_probe/.\n")
 
     # problem build specs (one representative instance per problem)
@@ -190,6 +192,7 @@ function main()
         (id = 2, label = "P2", build = () -> get_problem(2; dim = 300, n_seeds = 1)),
         (id = 3, label = "P3", build = () -> get_problem(3;            n_seeds = 1)),
         (id = 4, label = "P4", build = () -> get_problem(4; dim = 256, n_seeds = 1)),
+        (id = 5, label = "P5", build = () -> get_problem(5; dim = 256, n_seeds = 1)),
     ]
     specs = filter(s -> s.label in wanted, specs)
 

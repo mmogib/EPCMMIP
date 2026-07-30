@@ -1,5 +1,5 @@
 # ============================================================================
-# s30: Main benchmark — 5 methods × 4 problems × dims × seeds (tuned-vs-tuned)
+# s30: Main benchmark — tuned methods × suite problems × dims × seeds
 # ============================================================================
 #
 # Runs every method at its fine-tuned per-problem config (read from the
@@ -12,7 +12,8 @@
 #   - Tolerance    : eps = native_tol(P) (D1, source-paper criterion).
 #   - Budget       : maxiter = universal_maxiter(P, eps) (tolerance-aware, uniform).
 #   - Stopping     : NativeResStopping(native, eps) + MaxIterStopping + NanStopping.
-#   - Dims/seeds   : P1{64,128,256} P2{100,300,600,900} P3{K=100} P4{256,512};
+#   - Dims/seeds   : P1{64,128,256} P2{100,300,600,900} P3{50,100,200}
+#                    P4{256,512} P5{128,512,1024};
 #                    20 seeds for P3, 10 otherwise (3 each under --quick).
 #   - Production   : a full run (no --quick) writes production=1 rows (the paper
 #                    data); --quick writes production=0. The two tiers coexist in
@@ -45,12 +46,13 @@ isfile(TUNED_JL) ||
     error("s30: $(TUNED_JL) not found. Run the s20 sweep (all method×problem cells) first.")
 include(TUNED_JL)   # defines const TUNED_PARAMS, TUNED_CONVERGED
 
-const S30_METHODS    = (EPCM, EFBFP, AEFBFP, MTTM, IMTTM, IFRAB, SFRBM)  # reporting order (proposals first)
+const S30_METHODS    = (AEFBFP, MAEFBFP, MTTM, IMTTM, RFBSM, IRFBSM)  # reporting order (proposals first)
 const S30_PROBLEMS   = ("P1", "P2", "P3", "P4")
 const S30_DIMS       = Dict("P1" => [64, 128, 256], "P2" => [100, 300, 600, 900],
                             "P3" => [50, 100, 200], "P4" => [256, 512])
-const S30_REFDIM     = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 256)  # history cell
-const METHOD_BY_NAME = Dict(name(T) => T for T in S30_METHODS)
+const S30_REFDIM     = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 256,
+                            )  # history cell
+const METHOD_BY_NAME = Dict(name(T) => T for T in (S30_METHODS..., MFRBSM))
 
 # ── tiny ARG parser ──────────────────────────────────────────────────────────
 function parse_cli(args)
@@ -144,9 +146,10 @@ function print_s30_summary(db, tee, production::Bool)
 end
 
 # (method, problem) cells excluded from the --summary ranking (known artifacts).
-# MTTM/P1: the α₁=1 artifact — the first iterate is 0, which on P1 (x*=0) "converges"
-# in ~2 iters trivially; it is not a real result, so it is dropped from the ranking.
-const SUMMARY_EXCLUDE = Set([("MTTM", "P1")])
+# MTTM/P1 and MTTM/P5: α₁=1 forces the first computed iterate to 0. On zero-solution
+# problems (P1, P5) that produces trivial "convergence" in ~2 iters, so these cells
+# are not real algorithmic wins and are dropped from the ranking.
+const SUMMARY_EXCLUDE = Set([("MTTM", "P1"), ("MTTM", "P5")])
 # A method that solved < ROBUST_FRAC of its (seed × dim) instances on a problem is "weak":
 # it is ranked AFTER the robust solvers, so a lucky-fast minority can never top the list.
 const ROBUST_FRAC = 0.5
@@ -238,7 +241,7 @@ function main()
     plist  = join(problems, ",")
 
     println(tee, "=" ^ 80)
-    println(tee, "  s30 benchmark — tuned-vs-tuned, 5 methods × suite   $(Dates.now())")
+    println(tee, "  s30 benchmark — tuned-vs-tuned, $(length(S30_METHODS)) methods × suite   $(Dates.now())")
     println(tee, "  reps=$reps  quick=$quick  production=$(production ? 1 : 0)  force=$force  run_id=$run_id")
     println(tee, "  methods=$mlist  problems=$plist")
     println(tee, "=" ^ 80)

@@ -15,6 +15,12 @@ results/logs/*
 results/figures/*
 !results/figures/.gitkeep
 
+# Generated experiment artifacts in scenario-specific script folders
+**/results/*.db
+**/results/*.log
+**/results/logs/*
+**/results/figures/*
+
 # ── Julia ───────────────────────────────────────────────────────────────────
 *.jl.cov
 *.jl.*.cov

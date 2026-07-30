@@ -53,14 +53,14 @@
 
 include(joinpath(@__DIR__, "..", "src", "includes.jl"))
 
-const METHOD_TYPES = Dict("EPCM" => EPCM, "EFBFP" => EFBFP, "AEFBFP" => AEFBFP,
-                          "MTTM" => MTTM, "IMTTM" => IMTTM,
-                          "SFRBM" => SFRBM, "IFRAB" => IFRAB)
+const METHOD_TYPES = Dict("EPCM" => EPCM, "EFBFP" => EFBFP, "AEFBFP" => AEFBFP, "MAEFBFP" => MAEFBFP,
+                          "VAFBS" => VAFBS, "MDITSM" => MDITSM, "MFRBSM" => MFRBSM, "RFBSM" => RFBSM, "IRFBSM" => IRFBSM,
+                          "MTTM" => MTTM, "IMTTM" => IMTTM, "SFRBM" => SFRBM, "IFRAB" => IFRAB)
 # Suite (2026-05-28): P1=Volterra SFP (dim=grid N), P2=ℓ1+quad (m), P3=control
-# (K=100 fixed), P4=LASSO (signal N). Same dims as s10 so the OAT screen and
-# the LHS search optimize at the same conditioning.
-const MID_DIM   = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 512)
-const QUICK_DIM = Dict("P1" => 32,  "P2" => 100, "P3" => 100, "P4" => 64)
+# (K=100 fixed), P4=LASSO (signal N), P5=ℓ₂ example (truncation length N).
+# Same dims as s10 so the OAT screen and the LHS search optimize at the same conditioning.
+const MID_DIM   = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 512, "P5" => 256)
+const QUICK_DIM = Dict("P1" => 32,  "P2" => 100, "P3" => 100, "P4" => 64,  "P5" => 64)
 
 "Fixed RNG seed for the LHS design (reproducible configs ⟹ DB skip works)."
 const LHS_SEED = 20260528
@@ -248,6 +248,47 @@ function lhs_spec(::AEFBFP, problem_str::AbstractString)
     return (length(labels), build, labels)
 end
 
+function lhs_spec(::MAEFBFP, problem_str::AbstractString)
+    tau_c  = MAEFBFP_PRESETS[Symbol(problem_str)].tau_0
+    tau_lo, tau_hi = problem_str == "P1" ? (0.05, 1.5) : (0.1, 10.0)
+    labels = ["mu", "tau_0", "xi_exp", "sigma_exp", "sigma_scale",
+              "alpha_scale", "alpha_exp", "beta_scale", "beta_exp"]
+    build = function (u)
+        bound_eff   = 1 / sqrt(6)
+        mu          = _lin(u[1], 0.08, 0.32)
+        tau_0       = _log(u[2], tau_c * tau_lo, tau_c * tau_hi)
+        xi_exp      = _lin(u[3], 1.10, 3.00)
+        sigma_exp   = _lin(u[4], 0.70, 1.00)
+        sigma_scale = _log(u[5], 0.01, 0.30)
+        alpha_exp   = _lin(u[7], 1.10, 3.00)
+        beta_exp    = _lin(u[9], 1.10, 3.00)
+        alpha_scale = _lin(u[6], 0.0, 0.12)
+        beta_cap    = max((0.97 * bound_eff - alpha_scale) / mu - 1.0, 0.0)
+        beta_scale  = _lin(u[8], 0.0, beta_cap)
+        return (mu = mu, tau_0 = tau_0, xi_exp = xi_exp,
+                sigma_exp = sigma_exp, sigma_scale = sigma_scale,
+                alpha_scale = alpha_scale, alpha_exp = alpha_exp,
+                beta_scale = beta_scale, beta_exp = beta_exp)
+    end
+    return (length(labels), build, labels)
+end
+
+function lhs_spec(::VAFBS, problem_str::AbstractString)
+    delta_c = VAFBS_PRESETS[Symbol(problem_str)].delta
+    labels = ["delta", "ell", "mu", "gamma", "alpha_scale", "f_scale"]
+    build = function (u)
+        delta       = _log(u[1], delta_c * 0.1, delta_c * 10.0)
+        ell         = _lin(u[2], 0.1, 0.9)
+        mu          = _lin(u[3], 0.05, 0.95)
+        gamma       = _lin(u[4], 0.1, 1.9)
+        alpha_scale = _log(u[5], 1.0e-4, 1.0e-1)
+        f_scale     = _log(u[6], 1.0e-3, 0.95)
+        return (delta = delta, ell = ell, mu = mu, gamma = gamma,
+                alpha_scale = alpha_scale, f_scale = f_scale)
+    end
+    return (length(labels), build, labels)
+end
+
 # ── Compact tuned-field formatter per method (for the ranking table) ─────────
 _tuned_str(a::EPCM)  = @sprintf("γ=%.2f ϑ0=%.3f ϑ1=%.3f ζ=%.3f τ0=%.3g sx=%.2f ss=%.3g dx=%.2f",
                                 a.gamma, a.vartheta_0, a.vartheta_1, a.zeta,
@@ -262,6 +303,78 @@ _tuned_str(a::EFBFP)  = @sprintf("ϑ0=%.3f ϑ1=%.3f τ0=%.3g sx=%.2f ss=%.3g dx=
                                  a.sigma_exp, a.sigma_scale, a.delta_exp)
 _tuned_str(a::AEFBFP) = @sprintf("μ=%.3f τ0=%.3g ξx=%.2f sx=%.2f ss=%.3g",
                                  a.mu, a.tau_0, a.xi_exp, a.sigma_exp, a.sigma_scale)
+_tuned_str(a::MAEFBFP) = @sprintf("μ=%.3f τ0=%.3g α=%.3g/%.2f β=1+%.3g/%.2f ξx=%.2f",
+                                  a.mu, a.tau_0, a.alpha_scale, a.alpha_exp,
+                                  a.beta_scale, a.beta_exp, a.xi_exp)
+_tuned_str(a::VAFBS)  = @sprintf("δ=%.3g ℓ=%.2f μ=%.2f γ=%.2f α=%.3g f=%.3g",
+                                 a.delta, a.ell, a.mu, a.gamma, a.alpha_scale, a.f_scale)
+
+function lhs_spec(::MDITSM, problem_str::AbstractString)
+    preset = MDITSM_PRESETS[Symbol(problem_str)]
+    labels = ["lambda_1", "mu", "alpha_scale", "beta_cap", "theta_cap", "mu_scale", "p_scale"]
+    build = function (u)
+        lambda_1    = _log(u[1], preset.lambda_1 * 0.1, preset.lambda_1 * 10.0)
+        mu          = _lin(u[2], 0.1, 0.95)
+        alpha_scale = _log(u[3], 5.0e-2, 5.0)
+        beta_cap    = _lin(u[4], 0.0, 0.25)
+        theta_cap   = _lin(u[5], 0.1, 0.9)
+        mu_scale    = _log(u[6], 1.0e-3, 10.0)
+        p_scale     = _log(u[7], 1.0e-3, 10.0)
+        return (lambda_1 = lambda_1, mu = mu, alpha_scale = alpha_scale,
+                beta_cap = beta_cap, theta_cap = theta_cap,
+                mu_scale = mu_scale, p_scale = p_scale)
+    end
+    return (length(labels), build, labels)
+end
+
+_tuned_str(a::MDITSM) = @sprintf("λ1=%.3g μ=%.2f α=%.3g β=%.3f θ=%.3f μs=%.3g ps=%.3g",
+                                 a.lambda_1, a.mu, a.alpha_scale, a.beta_cap,
+                                 a.theta_cap, a.mu_scale, a.p_scale)
+
+function lhs_spec(::MFRBSM, problem_str::AbstractString)
+    preset = MFRBSM_PRESETS[Symbol(problem_str)]
+    labels = ["lambda_minus1", "lambda_0", "mu"]
+    build = u -> (lambda_minus1 = _log(u[1], preset.lambda_minus1 * 0.1, preset.lambda_minus1 * 10.0),
+                  lambda_0      = _log(u[2], preset.lambda_0 * 0.1, preset.lambda_0 * 10.0),
+                  mu            = _lin(u[3], 0.05, 0.49))
+    return (length(labels), build, labels)
+end
+
+_tuned_str(a::MFRBSM) = @sprintf("λ-1=%.3g λ0=%.3g μ=%.3f",
+                                 a.lambda_minus1, a.lambda_0, a.mu)
+
+function lhs_spec(::RFBSM, problem_str::AbstractString)
+    preset = RFBSM_PRESETS[Symbol(problem_str)]
+    labels = ["lambda_0", "theta", "mu"]
+    build = u -> (lambda_0 = _log(u[1], preset.lambda_0 * 0.1, preset.lambda_0 * 10.0),
+                  theta    = _lin(u[2], 0.1, 1.0),
+                  mu       = _lin(u[3], 0.1, 0.95))
+    return (length(labels), build, labels)
+end
+
+_tuned_str(a::RFBSM) = @sprintf("λ0=%.3g θ=%.3f μ=%.3f", a.lambda_0, a.theta, a.mu)
+
+function lhs_spec(::IRFBSM, problem_str::AbstractString)
+    preset = IRFBSM_PRESETS[Symbol(problem_str)]
+    labels = ["lambda_0", "theta", "mu", "alpha"]
+    build = function (u)
+        theta = _lin(u[2], 0.1, 1.0)
+        mu    = _lin(u[3], 0.1, 0.95)
+        K     = theta * (1 - mu^2) / (2 - theta + mu * theta)^2 + (1 - theta) / theta
+        # Algorithm 2 / eq. (21): alpha(1+alpha)/(1-alpha)^2 < K. Sample alpha
+        # strictly inside the induced admissible interval so s20 remains
+        # "admissibility by construction" for IRFBSM as well.
+        alpha_hi = 0.95 * (sqrt(8 * K^2 + 8 * K + 1) - 2 * K - 1) / (2 * (K + 1))
+        return (lambda_0 = _log(u[1], preset.lambda_0 * 0.1, preset.lambda_0 * 10.0),
+                theta    = theta,
+                mu       = mu,
+                alpha    = _lin(u[4], 0.0, alpha_hi))
+    end
+    return (length(labels), build, labels)
+end
+
+_tuned_str(a::IRFBSM) = @sprintf("λ0=%.3g θ=%.3f μ=%.3f α=%.3f",
+                                 a.lambda_0, a.theta, a.mu, a.alpha)
 
 """
     default_samples(dims; quick) -> Int
@@ -317,8 +430,8 @@ end
 # file from ALL current-version s20 rows in the DB, after each s20 run.
 # ============================================================================
 
-const PROMOTE_METHODS  = (EPCM, EFBFP, AEFBFP, MTTM, IMTTM, IFRAB, SFRBM)
-const PROMOTE_PROBLEMS = ("P1", "P2", "P3", "P4")
+const PROMOTE_METHODS  = (EPCM, EFBFP, AEFBFP, MAEFBFP, VAFBS, MDITSM, MFRBSM, RFBSM, IRFBSM, MTTM, IMTTM, IFRAB, SFRBM)
+const PROMOTE_PROBLEMS = ("P1", "P2", "P3", "P4", "P5")
 const AUTOGEN_PATH = joinpath(JCODE_ROOT, "configs",
                               "autogenerated_finetuned_parameters_presets.jl")
 
@@ -485,14 +598,14 @@ end
 
 "Problems to sweep: --problem=Pk (one), --problems=Pk,Pj (subset), or ALL (default)."
 function select_problems(opts)
-    allp = ["P1", "P2", "P3", "P4"]
+    allp = ["P1", "P2", "P3", "P4", "P5"]
     if haskey(opts, "problem")
         p = opts["problem"]
-        p in allp || error("--problem must be P1|P2|P3|P4; got '$p'")
+        p in allp || error("--problem must be P1|P2|P3|P4|P5; got '$p'")
         return [p]
     elseif haskey(opts, "problems")
         ps = String.(strip.(split(opts["problems"], ",")))
-        all(p -> p in allp, ps) || error("--problems entry must be among P1|P2|P3|P4")
+        all(p -> p in allp, ps) || error("--problems entry must be among P1|P2|P3|P4|P5")
         return ps
     end
     return allp                                    # default: ALL problems

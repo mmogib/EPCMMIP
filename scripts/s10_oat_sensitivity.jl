@@ -31,14 +31,15 @@
 
 include(joinpath(@__DIR__, "..", "src", "includes.jl"))
 
-const METHOD_TYPES = Dict("EPCM" => EPCM, "EFBFP" => EFBFP, "AEFBFP" => AEFBFP,
-                          "MTTM" => MTTM, "IMTTM" => IMTTM,
+const METHOD_TYPES = Dict("EPCM" => EPCM, "EFBFP" => EFBFP, "AEFBFP" => AEFBFP, "MAEFBFP" => MAEFBFP,
+                          "VAFBS" => VAFBS, "MDITSM" => MDITSM, "MFRBSM" => MFRBSM, "RFBSM" => RFBSM, "IRFBSM" => IRFBSM, "MTTM" => MTTM, "IMTTM" => IMTTM,
                           "SFRBM" => SFRBM, "IFRAB" => IFRAB)
 # Suite (2026-05-28): P1=Volterra SFP (dim=grid N), P2=ℓ1+quad (m), P3=control
-# (K=100 fixed), P4=LASSO (signal N). Stopping = native source-paper criterion
+# (K=100 fixed), P4=LASSO (signal N), P5=ℓ₂ example (truncation length N).
+# Stopping = native source-paper criterion
 # (D1) via NativeResStopping(prob.native_residual, native_tol(problem)).
-const MID_DIM   = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 512)
-const QUICK_DIM = Dict("P1" => 32,  "P2" => 100, "P3" => 100, "P4" => 64)
+const MID_DIM   = Dict("P1" => 128, "P2" => 300, "P3" => 100, "P4" => 512, "P5" => 256)
+const QUICK_DIM = Dict("P1" => 32,  "P2" => 100, "P3" => 100, "P4" => 64,  "P5" => 64)
 
 # Relative multipliers for log-scaled params (tau_0, lambda_0): grid = center .* this.
 const LOG_MULT = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
@@ -126,6 +127,69 @@ function oat_groups(alg::AEFBFP)  # min-rule stepsize: sweep μ and the summable
         ("xi",          vcat(_pts(:xi_exp, [1.25, 1.5, 2.0, 2.5, 3.0]),
                              [("xi_rule=:zero", (xi_rule = :zero,))])),
         ("mu",          _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
+    ]
+end
+
+function oat_groups(alg::MAEFBFP)  # modified min-rule factor α_n + β_n μ
+    return [
+        ("tau_0",       _pts(:tau_0, alg.tau_0 .* LOG_MULT)),
+        ("sigma_exp",   _pts(:sigma_exp, [0.6, 0.75, 0.9, 1.0])),
+        ("sigma_scale", _pts(:sigma_scale, [0.1, 0.25, 0.5, 1.0])),
+        ("xi",          vcat(_pts(:xi_exp, [1.25, 1.5, 2.0, 2.5, 3.0]),
+                             [("xi_rule=:zero", (xi_rule = :zero,))])),
+        ("mu",          _pts(:mu, [0.1, 0.2, 0.3, 0.35])),
+        ("alpha_scale", _pts(:alpha_scale, [0.0, 0.01, 0.02, 0.05])),
+        ("alpha_exp",   _pts(:alpha_exp, [1.1, 1.5, 2.0, 3.0])),
+        ("beta_scale",  _pts(:beta_scale, [0.0, 0.02, 0.05, 0.1])),
+        ("beta_exp",    _pts(:beta_exp, [1.1, 1.5, 2.0, 3.0])),
+    ]
+end
+
+function oat_groups(alg::VAFBS)
+    return [
+        ("delta",       _pts(:delta, alg.delta .* LOG_MULT)),
+        ("ell",         _pts(:ell, [0.1, 0.25, 0.5, 0.75, 0.9])),
+        ("mu",          _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
+        ("gamma",       _pts(:gamma, [0.2, 0.5, 0.8, 1.0, 1.5, 1.8])),
+        ("alpha_scale", _pts(:alpha_scale, [1.0e-4, 1.0e-3, 1.0e-2, 5.0e-2, 1.0e-1])),
+        ("f_scale",     _pts(:f_scale, [1.0e-3, 0.1, 0.5, 0.9])),
+    ]
+end
+
+function oat_groups(alg::MDITSM)
+    return [
+        ("lambda_1",    _pts(:lambda_1, alg.lambda_1 .* LOG_MULT)),
+        ("mu",          _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
+        ("alpha_scale", _pts(:alpha_scale, [0.1, 0.5, 1.0, 2.0, 5.0])),
+        ("beta_cap",    _pts(:beta_cap, [0.0, 0.05, 0.1, 0.15, 0.2])),
+        ("theta_cap",   _pts(:theta_cap, [0.1, 0.25, 0.45, 0.6, 0.8])),
+        ("mu_scale",    _pts(:mu_scale, [0.0, 0.1, 0.5, 1.0, 2.0])),
+        ("p_scale",     _pts(:p_scale, [0.0, 0.1, 0.5, 1.0, 2.0])),
+    ]
+end
+
+function oat_groups(alg::MFRBSM)
+    return [
+        ("lambda_minus1", _pts(:lambda_minus1, alg.lambda_minus1 .* LOG_MULT)),
+        ("lambda_0",      _pts(:lambda_0, alg.lambda_0 .* LOG_MULT)),
+        ("mu",            _pts(:mu, [0.1, 0.2, 0.3, 0.4, 0.49])),
+    ]
+end
+
+function oat_groups(alg::RFBSM)
+    return [
+        ("lambda_0", _pts(:lambda_0, alg.lambda_0 .* LOG_MULT)),
+        ("theta",    _pts(:theta, [0.1, 0.25, 0.5, 0.75, 1.0])),
+        ("mu",       _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
+    ]
+end
+
+function oat_groups(alg::IRFBSM)
+    return [
+        ("lambda_0", _pts(:lambda_0, alg.lambda_0 .* LOG_MULT)),
+        ("theta",    _pts(:theta, [0.1, 0.25, 0.5, 0.75, 1.0])),
+        ("mu",       _pts(:mu, [0.1, 0.3, 0.5, 0.7, 0.9])),
+        ("alpha",    _pts(:alpha, [0.0, 0.05, 0.1, 0.15, 0.2])),
     ]
 end
 
@@ -228,14 +292,14 @@ end
 
 "Problems to sweep: --problem=Pk (one), --problems=Pk,Pj (subset), or ALL (default)."
 function select_problems(opts)
-    allp = ["P1", "P2", "P3", "P4"]
+    allp = ["P1", "P2", "P3", "P4", "P5"]
     if haskey(opts, "problem")
         p = opts["problem"]
-        p in allp || error("--problem must be P1|P2|P3|P4; got '$p'")
+        p in allp || error("--problem must be P1|P2|P3|P4|P5; got '$p'")
         return [p]
     elseif haskey(opts, "problems")
         ps = String.(strip.(split(opts["problems"], ",")))
-        all(p -> p in allp, ps) || error("--problems entry must be among P1|P2|P3|P4")
+        all(p -> p in allp, ps) || error("--problems entry must be among P1|P2|P3|P4|P5")
         return ps
     end
     return allp                                    # default: ALL problems

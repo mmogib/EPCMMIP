@@ -9,15 +9,16 @@
 #  4. callbacks.jl         ← AbstractCallback hierarchy, SolverState, built-in
 #                            stoppers + observers. Uses IterRecord (from types.jl).
 #  5. resolvents.jl        ← clipping_box, soft_thresholding. Standalone.
-#  6. problems.jl          ← TestProblem, InitialPoint, three problem builders.
+#  6. problems.jl          ← TestProblem, InitialPoint, five problem builders.
 #                            Uses clipping_box/soft_thresholding (from resolvents.jl).
-#  7. algorithm_types.jl   ← AbstractAlgorithm + 5 concrete algorithm structs
+#  7. algorithm_types.jl   ← AbstractAlgorithm + concrete algorithm structs
 #                            + per-algorithm PRESETS + name/version traits.
 #                            Standalone (does NOT reference TestProblem here;
 #                            solve method bodies in algorithm.jl).
 #  8. algorithm.jl         ← solve(::T, prob::TestProblem, x0; stopping, observers)
-#                            method bodies for all five solvers (EPCM, MTTM,
-#                            IMTTM, SFRBM, IFRAB) + their rule dispatchers. Uses
+#                            method bodies for the proposed methods + baseline
+#                            solvers (EPCM, EFBFP, AEFBFP, MAEFBFP, VAFBS, MDITSM,
+#                            MFRBSM, MTTM, IMTTM, SFRBM, IFRAB) + their rule dispatchers. Uses
 #                            TestProblem, AbstractAlgorithm, SolverState,
 #                            SolverResult, IterRecord.
 #  9. benchmark.jl         ← DB layer. Uses AbstractAlgorithm, name, version

@@ -57,7 +57,7 @@ const EPS_REF = 1.0e-6
 
 "Iteration-budget cap, UNIFORM across the suite: 6000 at `EPS_REF` (=1e-6) for every problem.
 (P4's singular LASSO needs ~3500–4000 iters at 1e-6; the others finish far sooner — 6000 is a safe common cap.)"
-const NMAX_REF = Dict("P1" => 6000, "P2" => 6000, "P3" => 6000, "P4" => 6000)
+const NMAX_REF = Dict("P1" => 6000, "P2" => 6000, "P3" => 6000, "P4" => 6000, "P5" => 6000)
 
 """
 Native (source-paper) stopping QUANTITY per problem, at a UNIFORM threshold 1e-6
@@ -67,11 +67,12 @@ quantity differs per problem, but the bar — and the budget below — are the s
   - P2 (ℓ1+quad, Yao2024):        ‖x_{k+1}−x_k‖              < 1e-6
   - P3 (control, Izuchukwu2023):  Tol_n = 0.5‖z−clip(z−Bz)‖² < 1e-6
   - P4 (LASSO, Tan2022a):         ‖x_{k+1}−x_k‖              < 1e-6
+  - P5 (ℓ₂ example):              ‖x − J^A_1(x − Bx)‖        < 1e-6
 Each problem's `native_residual` closure computes the corresponding quantity;
 scripts stop on `NativeResStopping(prob.native_residual, NATIVE_TOL[prob])` and
 still RECORD R_n/R̃_n as secondary columns.
 """
-const NATIVE_TOL = Dict("P1" => 1.0e-6, "P2" => 1.0e-6, "P3" => 1.0e-6, "P4" => 1.0e-6)
+const NATIVE_TOL = Dict("P1" => 1.0e-6, "P2" => 1.0e-6, "P3" => 1.0e-6, "P4" => 1.0e-6, "P5" => 1.0e-6)
 
 """
     native_tol(problem::AbstractString) -> Float64

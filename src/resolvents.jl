@@ -1,10 +1,10 @@
-# resolvents.jl — Closed-form resolvent helpers for the three test problems.
+# resolvents.jl — Closed-form resolvent helpers for the benchmark problems.
 #
 # Each problem's set-valued operator A has a known closed-form resolvent
 # J^A_ρ(x) = (I + ρ A)^{-1}(x). The helpers below implement those:
 #
-#   - `clipping_box`        — for P1 (A = N_{[-2,5]^m}) and P3 (A = N_{[-1,1]^K})
-#   - `soft_thresholding`   — for P2 (A = ∂‖·‖_1)
+#   - `clipping_box`        — for normal-cone box problems such as P3
+#   - `soft_thresholding`   — for ℓ₁-subdifferential problems such as P2/P4
 #
 # These are pure, allocating functions. They are called by problem builders in
 # `problems.jl` to construct `prob.resolvent_A` closures with the
