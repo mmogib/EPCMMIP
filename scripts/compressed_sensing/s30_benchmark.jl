@@ -60,6 +60,18 @@ const NMAX_REF = 5000
 const GAMMA_REF = 1.0e-3
 const SNR_DB_REF = 40.0
 const DATA_SEED_BASE = 20260701
+const MANUSCRIPT_SEED_BASE = 2026080100
+const MANUSCRIPT_NOISE_STD = 1.0e-2
+const MANUSCRIPT_START_SCALE = 0.1
+const MANUSCRIPT_AEFBFP_PARAMS = (
+    mu = 0.32,
+    tau_0 = 0.05,
+    xi_rule = :power,
+    sigma_rule = :power,
+    xi_exp = 1.11,
+    sigma_exp = 0.97,
+    sigma_scale = 0.024,
+)
 
 const WINNER_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tuned_winners (
@@ -386,6 +398,106 @@ function build_problem(case; gamma::Float64, snr_db::Float64, data_seed::Int,
     )
 end
 
+"Return independent, published seeds for one manuscript compressed-sensing case."
+function manuscript_cs_seeds(case_index::Int, n_inits::Int)
+    case_index >= 1 || throw(ArgumentError("case_index must be positive"))
+    n_inits >= 1 || throw(ArgumentError("n_inits must be positive"))
+    base = MANUSCRIPT_SEED_BASE + 10_000 * case_index
+    return (
+        matrix = base + 1,
+        support = base + 2,
+        signs = base + 3,
+        noise = base + 4,
+        starts = [base + 100 + i for i in 1:n_inits],
+    )
+end
+
+"Build the definitive manuscript compressed-sensing instance and ten paired starts."
+function build_manuscript_problem(case; case_index::Int, gamma::Float64,
+                                  n_inits::Int = DEFAULT_INITIAL_POINTS)
+    M, N, k = case.M, case.N, case.k
+    N > M >= 2 || throw(ArgumentError("require N > M >= 2"))
+    1 <= k < N || throw(ArgumentError("require 1 <= k < N"))
+    seeds = manuscript_cs_seeds(case_index, n_inits)
+
+    gaussian = randn(Xoshiro(UInt64(seeds.matrix)), N, M)
+    qrf = qr(gaussian)
+    thin_identity = Matrix{Float64}(I, N, M)
+    Q = qrf.Q * thin_identity
+    C = Matrix(Q')
+
+    support = randperm(Xoshiro(UInt64(seeds.support)), N)[1:k]
+    signs = ifelse.(rand(Xoshiro(UInt64(seeds.signs)), Bool, k), 1.0, -1.0)
+    x_star = zeros(Float64, N)
+    x_star[support] .= signs
+    noise = MANUSCRIPT_NOISE_STD .* randn(Xoshiro(UInt64(seeds.noise)), M)
+    y = C * x_star .+ noise
+
+    orthogonality_error = norm(C * C' - I, Inf)
+    orthogonality_error <= 1.0e-10 ||
+        error("row-orthonormality invariant failed: ||CC'-I||_Inf=$orthogonality_error")
+    all(abs.(x_star[support]) .== 1.0) || error("planted signs are not ±1")
+
+    B_fn = let C = C, y = y
+        x -> C' * (C * x .- y)
+    end
+    resolvent_A_fn = let gamma = gamma
+        (x, rho) -> soft_thresholding(x, rho * gamma)
+    end
+    successive_displacement = (x, x_prev) -> isempty(x_prev) ? Inf : norm(x .- x_prev)
+
+    initial_points = InitialPoint[]
+    for i in 1:n_inits
+        x0 = MANUSCRIPT_START_SCALE .* randn(Xoshiro(UInt64(seeds.starts[i])), N)
+        push!(initial_points, InitialPoint("seed$i", i, x0))
+    end
+
+    hashes = (
+        C = array_sha256(C),
+        x_star = array_sha256(x_star),
+        noise = array_sha256(noise),
+        y = array_sha256(y),
+        starts = [array_sha256(ip.x0) for ip in initial_points],
+    )
+    metadata = (
+        C = C,
+        y = y,
+        noise = noise,
+        gamma = gamma,
+        L = 1.0,
+        M = M,
+        N = N,
+        k = k,
+        x_star = x_star,
+        support = support,
+        orthogonality_error = orthogonality_error,
+        seeds = seeds,
+        hashes = hashes,
+        protocol = "manuscript_v1",
+        case_id = case.problem,
+    )
+    return TestProblem(4, "CompressedSensing_Manuscript", N, B_fn,
+                       resolvent_A_fn, successive_displacement, x_star,
+                       initial_points, metadata)
+end
+
+"Build one definitive manuscript case and select its published initial point."
+function manuscript_problem_start(case_id::AbstractString, start_index::Int;
+                                  gamma::Float64 = GAMMA_REF)
+    case_index = findfirst(case -> case.problem == case_id, DEFAULT_CASES)
+    case_index === nothing &&
+        throw(ArgumentError("Unknown compressed-sensing case '$case_id'"))
+    1 <= start_index <= DEFAULT_INITIAL_POINTS ||
+        throw(ArgumentError("start_index must be in 1:$(DEFAULT_INITIAL_POINTS), got $start_index"))
+
+    case = DEFAULT_CASES[case_index]
+    prob = build_manuscript_problem(case;
+                                    case_index = case_index,
+                                    gamma = gamma,
+                                    n_inits = DEFAULT_INITIAL_POINTS)
+    return (prob = prob, init = prob.initial_points[start_index], case_index = case_index)
+end
+
 function ensure_local_tables!(db)
     DBInterface.execute(db, WINNER_TABLE_SQL)
     DBInterface.execute(db, FINAL_METRICS_TABLE_SQL)
@@ -476,17 +588,12 @@ function build_algorithm(db, method_name::AbstractString; allow_untuned_aefbfp::
                          aefbfp_preset::Union{Nothing,Symbol} = nothing,
                          aefbfp_round_digits::Union{Nothing,Int} = nothing)
     if method_name == "AEFBFP"
-        if aefbfp_preset === nothing
-            return tuned_aefbfp_from_db(db; allow_untuned = allow_untuned_aefbfp, round_digits = aefbfp_round_digits)
-        end
-        params = AEFBFP_PRESETS[aefbfp_preset]
-        aefbfp_round_digits === nothing || (params = round_namedtuple_values(params, aefbfp_round_digits))
-        return AEFBFP(; params...)
+        return AEFBFP(; MANUSCRIPT_AEFBFP_PARAMS...)
     end
     method_name == "VAFBS" && return VAFBS(:paper)
     method_name == "MDITSM" && return MDITSM(:paper)
-    method_name == "RFBSM" && return RFBSM(:cs_benchmark)
-    method_name == "IRFBSM" && return IRFBSM(:cs_benchmark)
+    method_name == "RFBSM" && return RFBSM(:paper)
+    method_name == "IRFBSM" && return IRFBSM(:paper)
     method_name == "MFRBSM" && return MFRBSM(:paper)
     method_name == "IFRAB" && return IFRAB(:paper)
     method_name == "SFRBM" && return SFRBM(:paper)
@@ -496,7 +603,7 @@ end
 
 function cs_config_hash(alg, case_id::String, cfg)
     _, base_input = make_config_hash(alg, case_id, cfg.eps, cfg.maxiter)
-    input = base_input * "|matrix=iid_Normal_0_1|signal=k_sparse_Uniform[-1,1]|snr_db=$(repr(cfg.snr_db))|stopping=common_lasso_scaled_residual_lambda_invL|consec=$(cfg.consec)"
+    input = base_input * "|protocol=manuscript_v1|matrix=row_orthonormal_gaussian_qr|signal=k_sparse_pm1|noise=Normal_0_1e-4|starts=0.1_Normal_independent|seed_base=$(MANUSCRIPT_SEED_BASE)|stopping=successive_displacement|consec=$(cfg.consec)|reps=$(cfg.reps)|cpu=median|warmup=2"
     return bytes2hex(sha256(input))[1:12], input
 end
 
@@ -625,19 +732,16 @@ function summarize_rows(df::DataFrame, tee, cfg)
 end
 
 function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmark")
+    runtime = configure_reproducible_runtime!()
     cfg = read_benchmark_config(args)
+    (!cfg.quick && cfg.reps != 3) &&
+        throw(ArgumentError("production benchmark requires exactly three timing repetitions"))
 
     logpath, tee, _ = setup_logging(String(script_name); logdir = LOGDIR)
     db = open_db(DB_PATH)
     ensure_local_tables!(db)
 
     try
-        aefbfp_label = cfg.aefbfp_preset === nothing ? "(tuned winner)" : string(cfg.aefbfp_preset)
-        aefbfp_round_label = cfg.aefbfp_round_digits === nothing ? "(full precision)" : string(cfg.aefbfp_round_digits)
-        aefbfp_params = resolved_aefbfp_params(db;
-                                               allow_untuned = cfg.allow_untuned_aefbfp,
-                                               aefbfp_preset = cfg.aefbfp_preset,
-                                               round_digits = cfg.aefbfp_round_digits)
         println(tee, "="^78)
         println(tee, "  Benchmark: $(PROBLEM_NAME)")
         println(tee, "="^78)
@@ -651,10 +755,10 @@ function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmar
         println(tee, "  maxiter     : $(cfg.maxiter)")
         println(tee, "  consec      : $(cfg.consec)")
         @printf(tee, "  gamma       : %.1e\n", cfg.gamma)
-        @printf(tee, "  snr_db      : %.1f dB\n", cfg.snr_db)
-        println(tee, "  aefbfp_preset : $(aefbfp_label)")
-        println(tee, "  aefbfp_round_digits : $(aefbfp_round_label)")
-        println(tee, "  aefbfp_params : $(aefbfp_params)")
+        println(tee, "  protocol    : manuscript_v1")
+        println(tee, "  noise       : N(0, 1e-4 I)")
+        println(tee, "  aefbfp_params : $(MANUSCRIPT_AEFBFP_PARAMS)")
+        println(tee, "  runtime     : $(runtime)")
         println(tee, "  production  : $(cfg.production ? 1 : 0)")
         println(tee, "  force       : $(cfg.force)")
         println(tee)
@@ -668,7 +772,42 @@ function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmar
 
         for case_id in cfg.cases
             case = CASE_BY_NAME[case_id]
+            case_index = findfirst(c -> c.problem == case_id, DEFAULT_CASES)
+            case_index === nothing && error("case index not found for $case_id")
+            prob = build_manuscript_problem(case; case_index = case_index,
+                                             gamma = cfg.gamma,
+                                             n_inits = cfg.initial_points)
+            parameters = Dict{String,Any}()
+            for method in cfg.methods
+                alg_for_manifest = build_algorithm(db, method)
+                parameters[method] = Dict(string(f) => repr(getfield(alg_for_manifest, f))
+                                          for f in fieldnames(typeof(alg_for_manifest)))
+            end
+            manifest_path = joinpath(RESULT_ROOT, "manifests", "$(case_id).json")
+            write_run_manifest(manifest_path;
+                runtime = runtime,
+                protocol = (
+                    name = "compressed_sensing_manuscript_v1",
+                    case = case_id,
+                    dimensions = (M = case.M, N = case.N, k = case.k),
+                    gamma = cfg.gamma,
+                    stopping = "successive_displacement",
+                    tolerance = cfg.eps,
+                    consecutive = cfg.consec,
+                    maxiter = cfg.maxiter,
+                    timing_repetitions = cfg.reps,
+                    warmup_iterations = 2,
+                    cpu_aggregation = "median",
+                    start_distribution = "0.1 * Normal(0,I)",
+                ),
+                seeds = prob.metadata.seeds,
+                hashes = prob.metadata.hashes,
+                parameters = parameters,
+                project_manifest = joinpath(JCODE_ROOT, "Manifest.toml"),
+            )
             println(tee, "\n[$(case_id)]  $(case_title(case))")
+            println(tee, "  manifest: $(manifest_path)")
+            @printf(tee, "  ||CC'-I||_Inf: %.3e\n", prob.metadata.orthogonality_error)
 
             for method_name in cfg.methods
                 alg = build_algorithm(db, method_name;
@@ -682,10 +821,11 @@ function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmar
 
                 println(tee, "  $(method_name)")
 
+                warm_stopping = (MaxIterStopping(2), NanStopping())
+                solve(alg, prob, copy(prob.initial_points[1].x0);
+                      stopping = warm_stopping, observers = ())
+
                 for dataset_idx in 1:cfg.datasets
-                    data_seed = dataset_seed(case, dataset_idx)
-                    prob = build_problem(case; gamma = cfg.gamma, snr_db = cfg.snr_db,
-                                         data_seed = data_seed, n_inits = cfg.initial_points)
                     for init in prob.initial_points
                         if !cfg.force
                             row = DBInterface.execute(db, """
@@ -704,6 +844,7 @@ function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmar
                         history = IterRecord[]
                         local result::SolverResult
                         local native_residual::Float64
+                        signature = nothing
 
                         for rep in 1:cfg.reps
                             stopping = make_stopping(prob, cfg.eps, cfg.maxiter; consec = cfg.consec)
@@ -719,6 +860,14 @@ function benchmark_main(args = ARGS; script_name::AbstractString = "s30_benchmar
                             end
 
                             native_residual = nrec.value
+                            current_signature = (result.flag, result.iterations, result.f_evals)
+                            if signature === nothing
+                                signature = current_signature
+                            else
+                                current_signature == signature || error(
+                                    "repetition inconsistency for $case_id/$method_name/$(init.label): " *
+                                    "expected $signature, got $current_signature at repetition $rep")
+                            end
                             push!(cpus, result.cpu_time)
                         end
 

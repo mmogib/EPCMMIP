@@ -26,11 +26,21 @@ function build_double_integrator_problem(K::Int; n_inits::Int = 10)
     exact_control = vcat(fill(1.0, switch), fill(-1.0, K - switch))
 
     initial_points = InitialPoint[]
+    start_seeds = Int[]
     for seed_idx in 1:n_inits
-        rng = Xoshiro(UInt64(31_000_000 + 1_000 * K + seed_idx))
+        seed = 31_000_000 + 1_000 * K + seed_idx
+        push!(start_seeds, seed)
+        rng = Xoshiro(UInt64(seed))
         z0 = -1.0 .+ 2.0 .* rand(rng, K)
         push!(initial_points, InitialPoint("seed$seed_idx", seed_idx, z0))
     end
+
+    seeds = (starts = start_seeds,)
+    hashes = (
+        operator_c = array_sha256(c),
+        exact_control = array_sha256(exact_control),
+        starts = [array_sha256(ip.x0) for ip in initial_points],
+    )
 
     metadata = (
         L = L,
@@ -38,6 +48,8 @@ function build_double_integrator_problem(K::Int; n_inits::Int = 10)
         h = h,
         c = c,
         M_factor = M_factor,
+        seeds = seeds,
+        hashes = hashes,
     )
 
     return TestProblem(

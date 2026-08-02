@@ -36,8 +36,7 @@
 
 include(joinpath(@__DIR__, "..", "..", "..", "src", "includes.jl"))
 include(joinpath(@__DIR__, "problem_definition.jl"))
-
-gr()
+include(joinpath(@__DIR__, "..", "manuscript_protocol.jl"))
 
 # ============================================================================
 # Before Section 1: shared setup reused by the local s20 / s30 / s70 workflow
@@ -54,15 +53,7 @@ const OC_METHOD_TYPES = (AEFBFP, VAFBS, MDITSM, RFBSM, IRFBSM, IFRAB)
 const OC_METHOD_BY_NAME = Dict(name(T) => T for T in OC_METHOD_TYPES)
 const CS_RESULT_ROOT = joinpath(JCODE_ROOT, "results", "compressed_sensing")
 const CS_DB_PATH = joinpath(CS_RESULT_ROOT, "experiments.db")
-const OC_SHARED_AEFBFP_PARAMS = (
-    mu = 0.32475054644276846,
-    tau_0 = 0.052386951978823273,
-    xi_rule = :power,
-    sigma_rule = :power,
-    xi_exp = 1.1090105055152015,
-    sigma_exp = 0.9709015323685187,
-    sigma_scale = 0.02390913974996533,
-)
+const OC_SHARED_AEFBFP_PARAMS = OC_MANUSCRIPT_AEFBFP_PARAMS
 
 const OC_DEFAULT_DIMS = [50, 100, 200]   # full benchmark mesh sizes
 const OC_REF_DIM = 100                   # single representative mesh used for history/figures
@@ -70,6 +61,7 @@ const OC_REF_INIT = 1
 const OC_DEFAULT_CANDIDATES = 20
 const OC_SEARCH_SEEDS = 5
 const OC_BENCH_INITS = 10
+const OC_DEFAULT_REPS = 3
 const OC_EPS_REF = 1.0e-5
 const OC_NMAX_REF = 4000
 
@@ -85,25 +77,25 @@ CREATE TABLE IF NOT EXISTS tuned_winners (
 """
 
 const OC_CONVERGENCE_STYLES = Dict(
-    "AEFBFP" => (color = RGB(0.0, 0.6056031704619725, 0.9786801190138923), lw = 1.8),
-    "VAFBS"  => (color = RGB(0.8888735440600661, 0.4356491485063990, 0.2781230452972764), lw = 1.8),
-    "MDITSM" => (color = RGB(0.2422239333391190, 0.6432750821113586, 0.3044486641883850), lw = 1.8),
-    "RFBSM"  => (color = RGB(0.7644400000572205, 0.4441117644309998, 0.8242975473403931), lw = 1.8),
-    "IRFBSM" => (color = RGB(0.6755439043045044, 0.5556622147560120, 0.0942344442009926), lw = 1.8),
-    "IFRAB"  => (color = RGB(0.0, 0.6657590270042419, 0.6809969544410706), lw = 1.8),
+    "AEFBFP" => (color = "#009AF9", lw = 1.8),
+    "VAFBS"  => (color = "#E26F46", lw = 1.8),
+    "MDITSM" => (color = "#3DA44D", lw = 1.8),
+    "RFBSM"  => (color = "#C77CFF", lw = 1.8),
+    "IRFBSM" => (color = "#AC8D18", lw = 1.8),
+    "IFRAB"  => (color = "#00A9AD", lw = 1.8),
 )
 
 const OC_CONTROL_STYLES = (
-    initial = (color = RGB(0.0, 0.6056, 0.9787), lw = 1.8, linestyle = :solid),
-    computed = (color = RGB(0.8889, 0.4356, 0.2781), lw = 1.8, linestyle = :solid),
-    exact = (color = RGB(0.2422, 0.6433, 0.3044), lw = 1.8, linestyle = :dash),
+    initial = (color = "#009AF9", lw = 1.8, linestyle = :solid),
+    computed = (color = "#E26F46", lw = 1.8, linestyle = :solid),
+    exact = (color = "#3DA44D", lw = 1.8, linestyle = :dash),
 )
 
 const OC_STATE_STYLES = (
-    comp1 = (color = RGB(0.0, 0.6056, 0.9787), lw = 1.8, linestyle = :solid),
-    comp2 = (color = RGB(0.8889, 0.4356, 0.2781), lw = 1.8, linestyle = :solid),
-    exact1 = (color = RGB(0.2422, 0.6433, 0.3044), lw = 1.8, linestyle = :dash),
-    exact2 = (color = RGB(0.7644, 0.4441, 0.8243), lw = 1.8, linestyle = :dash),
+    comp1 = (color = "#009AF9", lw = 1.8, linestyle = :solid),
+    comp2 = (color = "#E26F46", lw = 1.8, linestyle = :solid),
+    exact1 = (color = "#3DA44D", lw = 1.8, linestyle = :dash),
+    exact2 = (color = "#C77CFF", lw = 1.8, linestyle = :dash),
 )
 
 # ============================================================================
@@ -175,6 +167,7 @@ result_root(spec) = joinpath(JCODE_ROOT, "results", "optimal_control", spec.prob
 local_db_path(spec) = joinpath(result_root(spec), "experiments.db")
 local_logdir(spec) = joinpath(result_root(spec), "logs")
 local_figdir(spec) = joinpath(result_root(spec), "figures")
+local_manifestdir(spec) = joinpath(result_root(spec), "manifests")
 
 function control_time_grid(spec, prob::TestProblem)
     h = spec.final_time / prob.dim
@@ -250,12 +243,7 @@ function build_algorithm(db, spec, method_name::AbstractString;
                          aefbfp_preset::Union{Nothing,Symbol} = nothing,
                          aefbfp_round_digits::Union{Nothing,Int} = nothing)
     if method_name == "AEFBFP"
-        if aefbfp_preset === nothing
-            return shared_optimal_control_aefbfp(round_digits = aefbfp_round_digits)
-        end
-        params = AEFBFP_PRESETS[aefbfp_preset]
-        aefbfp_round_digits === nothing || (params = round_namedtuple_values(params, aefbfp_round_digits))
-        return AEFBFP(; params...)
+        return AEFBFP(; OC_MANUSCRIPT_AEFBFP_PARAMS...)
     end
 
     T = OC_METHOD_BY_NAME[method_name]
@@ -458,6 +446,7 @@ function read_benchmark_config(args)
     eps = haskey(opts, "eps") ? parse(Float64, opts["eps"]) : OC_EPS_REF
     maxiter = haskey(opts, "maxiter") ? parse(Int, opts["maxiter"]) : canonical_maxiter(eps)
     consec = haskey(opts, "consec") ? parse(Int, opts["consec"]) : 2
+    reps = haskey(opts, "reps") ? parse(Int, opts["reps"]) : (quick ? 1 : OC_DEFAULT_REPS)
     aefbfp_preset = haskey(opts, "aefbfp-preset") ? parse_symbol_option(opts["aefbfp-preset"]) : nothing
     aefbfp_round_digits = haskey(opts, "aefbfp-round-digits") ? parse(Int, opts["aefbfp-round-digits"]) : nothing
 
@@ -465,6 +454,7 @@ function read_benchmark_config(args)
     eps > 0 || throw(ArgumentError("eps must be > 0, got $eps"))
     maxiter >= 1 || throw(ArgumentError("maxiter must be >= 1, got $maxiter"))
     consec >= 1 || throw(ArgumentError("consec must be >= 1, got $consec"))
+    reps >= 1 || throw(ArgumentError("reps must be >= 1, got $reps"))
     aefbfp_preset === nothing || haskey(AEFBFP_PRESETS, aefbfp_preset) ||
         throw(ArgumentError("Unknown AEFBFP preset :$(aefbfp_preset)."))
     aefbfp_round_digits === nothing || aefbfp_round_digits >= 0 ||
@@ -478,12 +468,88 @@ function read_benchmark_config(args)
         eps = eps,
         maxiter = maxiter,
         consec = consec,
+        reps = reps,
         force = "force" in flags,
         summary = "summary" in flags,
         allow_untuned_aefbfp = "allow-untuned-aefbfp" in flags,
         aefbfp_preset = aefbfp_preset,
         aefbfp_round_digits = aefbfp_round_digits,
         production = !quick,
+    )
+end
+
+benchmark_result_signature(result::SolverResult) =
+    (result.flag, result.iterations, result.f_evals)
+
+"Return a representative deterministic result with the median measured CPU time."
+function median_cpu_result(results::AbstractVector{<:SolverResult})
+    isempty(results) && error("Cannot aggregate an empty repetition set.")
+    expected = benchmark_result_signature(first(results))
+    all(benchmark_result_signature(result) == expected for result in results) ||
+        error("Repetition signature mismatch: expected $(expected), got $([benchmark_result_signature(r) for r in results])")
+
+    representative = first(results)
+    return make_result(
+        converged = representative.converged,
+        iterations = representative.iterations,
+        f_evals = representative.f_evals,
+        cpu_time = median(result.cpu_time for result in results),
+        x = copy(representative.x),
+        flag = representative.flag,
+        history = copy(representative.history),
+        residual = representative.residual,
+        scaled_residual = representative.scaled_residual,
+    )
+end
+
+"Hash the algorithm together with the definitive OC timing/stopping protocol."
+function oc_config_hash(alg::AbstractAlgorithm, spec, cfg)
+    _, base_input = make_config_hash(alg, spec.problem_name, cfg.eps, cfg.maxiter)
+    input = string(base_input,
+                   "|protocol=oc_manuscript_v1",
+                   "|reps=", cfg.reps,
+                   "|consec=", cfg.consec,
+                   "|cpu=median",
+                   "|warmup=2")
+    return bytes2hex(sha256(input))[1:12], input
+end
+
+function warm_up_method!(alg::AbstractAlgorithm, prob::TestProblem, x0::Vector{Float64})
+    solve(alg, prob, copy(x0);
+          stopping = (MaxIterStopping(2), NanStopping()),
+          observers = ())
+    return nothing
+end
+
+function write_oc_manifest(db, spec, cfg, run_id::AbstractString, runtime,
+                           prob::TestProblem, dim::Int)
+    algorithms = Dict{String,String}()
+    for method_name in cfg.methods
+        algorithms[method_name] = sprint(show, build_algorithm(
+            db, spec, method_name;
+            allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
+            aefbfp_preset = cfg.aefbfp_preset,
+            aefbfp_round_digits = cfg.aefbfp_round_digits,
+        ))
+    end
+    path = joinpath(local_manifestdir(spec), "K$(dim)_$(run_id).json")
+    return write_run_manifest(
+        path;
+        runtime = runtime,
+        protocol = (
+            name = "oc_manuscript_v1",
+            eps = cfg.eps,
+            maxiter = cfg.maxiter,
+            consecutive_hits = cfg.consec,
+            repetitions = cfg.reps,
+            warmup_iterations = 2,
+            cpu_aggregation = "median",
+            deterministic_signature = ["flag", "iterations", "f_evals"],
+        ),
+        seeds = prob.metadata.seeds,
+        hashes = prob.metadata.hashes,
+        parameters = (dimension = dim, algorithms = algorithms),
+        project_manifest = joinpath(JCODE_ROOT, "Manifest.toml"),
     )
 end
 
@@ -630,7 +696,7 @@ function print_method_parameter_block(tee, db, spec, cfg)
     return nothing
 end
 
-function print_benchmark_banner(tee, spec, cfg, run_id::AbstractString)
+function print_benchmark_banner(tee, spec, cfg, run_id::AbstractString, runtime)
     println(tee, "="^78)
     println(tee, "  benchmark: $(spec.problem_name)")
     println(tee, "="^78)
@@ -639,8 +705,10 @@ function print_benchmark_banner(tee, spec, cfg, run_id::AbstractString)
     println(tee, "  initial points: $(cfg.initial_points)")
     @printf(tee, "  eps           : %.1e\n", cfg.eps)
     println(tee, "  maxiter       : $(cfg.maxiter)")
+    println(tee, "  repetitions   : $(cfg.reps) (median CPU; deterministic signature enforced)")
     println(tee, "  production    : $(cfg.production)")
     println(tee, "  force         : $(cfg.force)")
+    println(tee, "  runtime       : Julia $(runtime.julia_version), Julia threads=$(runtime.julia_threads), BLAS threads=$(runtime.blas_threads)")
     println(tee, "  run_id        : $(run_id)")
     return nothing
 end
@@ -651,15 +719,13 @@ function run_benchmark_cell(db, spec, cfg, run_id::AbstractString, prob::TestPro
                           allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
                           aefbfp_preset = cfg.aefbfp_preset,
                           aefbfp_round_digits = cfg.aefbfp_round_digits)
-    hash, hash_input = make_config_hash(alg, spec.problem_name, cfg.eps, cfg.maxiter)
+    hash, hash_input = oc_config_hash(alg, spec, cfg)
     ensure_config!(db, alg, spec.problem_name, cfg.eps, cfg.maxiter, hash, hash_input)
 
     if !cfg.force && is_done(db, hash, spec.problem_name, dim, init.label; script = "s30", production = cfg.production)
         return (status = :skipped,)
     end
 
-    stopping = make_stopping(prob, cfg.eps, cfg.maxiter; consec = cfg.consec)
-    nrec = NativeResRecorder(prob.native_residual)
     collect_hist = dim == OC_REF_DIM && init.seed_idx == OC_REF_INIT
 
     local result::SolverResult
@@ -667,15 +733,25 @@ function run_benchmark_cell(db, spec, cfg, run_id::AbstractString, prob::TestPro
     local history
 
     try
-        if collect_hist
-            hc = HistoryCallback()
-            result = solve(alg, prob, copy(init.x0); stopping = stopping, observers = (hc, nrec))
-            history = hc.history
-        else
-            history = IterRecord[]
-            result = solve(alg, prob, copy(init.x0); stopping = stopping, observers = (nrec,))
+        repetitions = SolverResult[]
+        native_values = Float64[]
+        history = IterRecord[]
+        for rep in 1:cfg.reps
+            stopping = make_stopping(prob, cfg.eps, cfg.maxiter; consec = cfg.consec)
+            nrec = NativeResRecorder(prob.native_residual)
+            if collect_hist && rep == 1
+                hc = HistoryCallback()
+                push!(repetitions, solve(alg, prob, copy(init.x0);
+                                         stopping = stopping, observers = (hc, nrec)))
+                history = hc.history
+            else
+                push!(repetitions, solve(alg, prob, copy(init.x0);
+                                         stopping = stopping, observers = (nrec,)))
+            end
+            push!(native_values, nrec.value)
         end
-        native_residual = nrec.value
+        result = median_cpu_result(repetitions)
+        native_residual = first(native_values)
     catch err
         history = IterRecord[]
         result = make_result(
@@ -729,6 +805,9 @@ end
 
 function benchmark_main(spec, args = ARGS; script_name::AbstractString = "s30_benchmark")
     cfg = read_benchmark_config(args)
+    runtime = configure_reproducible_runtime!()
+    cfg.production && cfg.reps != OC_DEFAULT_REPS &&
+        error("Production OC runs require exactly $(OC_DEFAULT_REPS) repetitions; got $(cfg.reps).")
     mkpath(local_logdir(spec))
     mkpath(local_figdir(spec))
 
@@ -750,15 +829,22 @@ function benchmark_main(spec, args = ARGS; script_name::AbstractString = "s30_be
         end
 
         # Section 2: benchmark banner
-        print_benchmark_banner(tee, spec, cfg, run_id)
+        print_benchmark_banner(tee, spec, cfg, run_id, runtime)
         print_method_parameter_block(tee, db, spec, cfg)
 
         # Section 3: main benchmark loop
         for dim in cfg.dims
             prob = spec.build_problem(dim; n_inits = cfg.initial_points)
+            manifest_path = write_oc_manifest(db, spec, cfg, run_id, runtime, prob, dim)
             println(tee, "\n[K=$(dim)]")
+            println(tee, "  manifest: $(manifest_path)")
 
             for method_name in cfg.methods
+                alg = build_algorithm(db, spec, method_name;
+                                      allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
+                                      aefbfp_preset = cfg.aefbfp_preset,
+                                      aefbfp_round_digits = cfg.aefbfp_round_digits)
+                warm_up_method!(alg, prob, first(prob.initial_points).x0)
                 for init in prob.initial_points
                     cell = run_benchmark_cell(db, spec, cfg, run_id, prob, dim, method_name, init)
                     print_benchmark_row(tee, method_name, dim, init, cell)
@@ -780,6 +866,14 @@ end
 # ============================================================================
 # s70: Figures and tables
 # ============================================================================
+# Legacy report helpers are retained below only for historical diffability.
+# They are deliberately not evaluated by this numerical entrypoint; the active
+# report implementation is the explicit Plots-loading s70_figures_tables.jl.
+if abspath(PROGRAM_FILE) == @__FILE__
+    benchmark_main(DOUBLE_INTEGRATOR_SPEC)
+end
+
+if false
 
 function write_summary_table_tex(df, spec, path::String)
     methods = [name(T) for T in OC_METHOD_TYPES]
@@ -898,7 +992,7 @@ function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Boo
     for method in [name(T) for T in OC_METHOD_TYPES]
         sub = hdf[hdf.method .== method, :]
         nrow(sub) == 0 && continue
-        sty = get(OC_CONVERGENCE_STYLES, method, (color = RGB(0.35, 0.35, 0.35), lw = 1.8))
+        sty = get(OC_CONVERGENCE_STYLES, method, (color = "#595959", lw = 1.8))
         vals = max.(Float64.(sub.residual) .^ 2, 1.0e-16)
         plot!(plt, Int.(sub.k), vals;
               label = method,
@@ -909,7 +1003,7 @@ function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Boo
     end
     plot!(plt;
           xlabel = "Iter",
-          ylabel = L"\mathcal{R}_n",
+          ylabel = "R_n",
           yscale = :log10,
           xlims = (0, 250),
           ylims = (1.0e-5, 1.0e0),
@@ -1053,4 +1147,6 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     benchmark_main(DOUBLE_INTEGRATOR_SPEC)
 end
+
+end # disabled legacy report-helper block
 

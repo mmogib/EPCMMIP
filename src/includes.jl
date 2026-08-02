@@ -4,9 +4,10 @@
 # ─── Include order (dependency-driven; DO NOT reorder lightly) ──────────────
 #
 #  1. deps.jl              ← package imports (LinearAlgebra, SQLite, ProgressMeter, …)
-#  2. types.jl             ← SolverResult, IterRecord, make_result
-#  3. io_utils.jl          ← TeeIO, setup_logging, teardown_logging
-#  4. callbacks.jl         ← AbstractCallback hierarchy, SolverState, built-in
+#  2. reproducibility.jl   ← runtime pins, manifests, realized-array hashes
+#  3. types.jl             ← SolverResult, IterRecord, make_result
+#  4. io_utils.jl          ← TeeIO, setup_logging, teardown_logging
+#  5. callbacks.jl         ← AbstractCallback hierarchy, SolverState, built-in
 #                            stoppers + observers. Uses IterRecord (from types.jl).
 #  5. resolvents.jl        ← clipping_box, soft_thresholding. Standalone.
 #  6. problems.jl          ← TestProblem, InitialPoint, five problem builders.
@@ -31,6 +32,7 @@
 const JCODE_ROOT = dirname(@__DIR__)
 
 include("deps.jl")
+include("reproducibility.jl")
 include("types.jl")
 include("io_utils.jl")
 include("callbacks.jl")
@@ -40,3 +42,5 @@ include("algorithm_types.jl")
 include(joinpath(JCODE_ROOT, "configs", "competitors_original_parameters_presets.jl"))  # baseline :paper/:Pk presets (hand-maintained)
 include("algorithm.jl")
 include("benchmark.jl")
+include("timing_protocol_v2.jl")
+include("supplementary_009.jl")

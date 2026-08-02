@@ -2,6 +2,9 @@
 # MSE-stopping compressed-sensing experiment.
 
 include(joinpath(@__DIR__, "s30_benchmark.jl"))
+using Plots
+using LaTeXStrings
+
 gr()
 
 function figure_config(args)

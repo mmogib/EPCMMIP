@@ -51,3 +51,28 @@ function soft_thresholding(x::AbstractVector{Float64}, threshold::Real)
     t = convert(Float64, threshold)
     return sign.(x) .* max.(abs.(x) .- t, 0.0)
 end
+
+"""
+    project_simplex(v) -> Vector{Float64}
+
+Euclidean projection onto `{x >= 0 : sum(x) = 1}` using the sort-based
+threshold algorithm of complexity `O(n log n)`.
+"""
+function project_simplex(v::AbstractVector{<:Real})
+    isempty(v) && throw(ArgumentError("project_simplex requires a nonempty vector"))
+    values = Float64.(v)
+    sorted = sort(values; rev = true)
+    shifted_cumsum = cumsum(sorted) .- 1.0
+    rho = findlast(i -> sorted[i] - shifted_cumsum[i] / i > 0.0, eachindex(sorted))
+    rho === nothing && error("simplex projection threshold was not found")
+    theta = shifted_cumsum[rho] / rho
+    return max.(values .- theta, 0.0)
+end
+
+"Project the first `x_dim` and remaining coordinates onto separate simplices."
+function project_product_simplex(u::AbstractVector{<:Real}, x_dim::Integer)
+    1 <= x_dim < length(u) ||
+        throw(ArgumentError("x_dim must satisfy 1 <= x_dim < length(u)"))
+    return vcat(project_simplex(@view(u[1:x_dim])),
+                project_simplex(@view(u[(x_dim + 1):end])))
+end

@@ -1,117 +1,61 @@
-# EPCMMIP
+# EPCMMIP numerical program
 
-Julia implementation and benchmark study of the **Extrapolation–Proximal–Contraction
-Method** (EPCM) and its two reduced variants (**EFBFP**, **AEFBFP**) for the monotone
-variational inclusion
-$$0 \in A(x) + B(x),$$
-where $A$ is maximal monotone (set-valued) and $B$ is monotone and $L$-Lipschitz
-(single-valued, **not** assumed cocoercive).
+Reproducible Julia 1.12.6 experiments for the manuscript's compressed-sensing, optimal-control, and matrix saddle-point studies. The implementation compares AEFBFP with VAFBS, MDITSM, RFBSM, IRFBSM, and IFRAB; the game study also includes a local Halpern forward-backward diagnostic.
 
-EPCM is a Halpern-anchored, forward-reflected–backward splitting method with an
-**$L$-free self-adaptive step size** (no knowledge of $L$ required), a single resolvent
-of $A$ and **one new evaluation of $B$ per iteration** (it reuses the previous
-$B$-value), and a projection–contraction correction. It is **strongly convergent** to
-$P_{\mathcal S}(x_0)$ — the metric projection of the anchor onto the solution set —
-without cocoercivity, strong monotonicity, or compactness. The two variants drop the
-projection–contraction step (**EFBFP**) and additionally switch to a min-rule step size
-(**AEFBFP**); all three are proven strongly convergent.
+## Reproducibility contract
 
-This repository accompanies a study by M. Uddin, M. Alshahrani (corresponding), and
-Q. H. Ansari (KFUPM Department of Mathematics / IRC-MOIN).
+- one Julia thread and one BLAS thread;
+- independent named seeds for every random artifact;
+- SHA-256 hashes of realized arrays;
+- two warm-ups followed by three measured repetitions;
+- identical flag/iteration/evaluation signatures required across repetitions;
+- content-addressed SQLite rows and JSON run manifests under `results/`.
 
-## What this repository contains
-- A source-verified implementation of EPCM, EFBFP, AEFBFP (proposed) and four reference solvers.
-- Five monotone-inclusion test problems drawn from the recent splitting literature.
-- A reproducible benchmark pipeline (SQLite-backed experiment database, parameter
-  tuning via Latin-hypercube search, source-paper validation, a full sweep, and the
-  paper's figures/tables).
+Set up and test from this directory:
 
-## Methods
-
-| Acronym | Reference | Algorithm |
-|---------|-----------|-----------|
-| EPCM    | This study | Proposed (Alg. 1) |
-| EFBFP   | This study | Proposed reduced variant (Alg. 2) |
-| AEFBFP  | This study | Proposed reduced variant, min-rule step (Alg. 3) |
-| MTTM    | Gibali–Thong, 2018 | Alg. 1 |
-| IMTTM   | Tan–Cho, 2022 | Alg. 3.3 |
-| IFRAB   | Izuchukwu et al., 2023 | Alg. 4.5 (inertial) |
-| SFRBM   | Yao–Adamu–Shehu, 2024 | Alg. 2 |
-
-## Test problems
-*(suite under finalization — P1/P2 may be revised)*
-
-| Problem | Source | Structure |
-|---------|--------|-----------|
-| P1 | Tan–Cho, 2022 (§5.2) | Volterra split-feasibility, $L=(2/\pi)^2$ |
-| P2 | Yao–Adamu–Shehu, 2024 (§4.2) | $\ell_1$ + quadratic, $L=2$ |
-| P3 | Izuchukwu et al., 2023 (§6.2) | box-constrained, **rank-1** $B = 2h\,\mathbf{1}\mathbf{1}^\top$ |
-| P4 | Tan–Cho, 2022 (§5.3) | LASSO, $C$ underdetermined, $L=1$ |
-| P5 | Example 4.2 (ℓ₂ truncation) | monotone inclusion with $A=2I$, $B(x)=x_+$, $L=1$ |
-
-## Benchmark findings (current P1–P4 production sweep)
-
-Full tuned-vs-tuned sweep (`s30`; uniform native tolerance $10^{-6}$, budget $6000$;
-0 errors), with all proposed methods run at parameters **inside the proven admissible
-region** ($\vartheta_0,\mu < 1/\sqrt6$). **Median iterations to the native stopping
-tolerance** over converged seeds $\times$ dimensions (`converged / total`):
-
-| Method | P1 | P2 | P3 | P4 |
-|--------|----|----|----|----|
-| EPCM   | 1802 (28/30) | 1596 (40/40) | 265 (60/60) | 4272 (20/20) |
-| EFBFP  | 1431 (30/30) | 1377 (39/40) | 246 (60/60) | 3994 (20/20) |
-| **AEFBFP** | 1806 (30/30) | **656 (40/40)** | **171 (60/60)** | **3266 (20/20)** |
-| IFRAB  | **348 (30/30)** | **46 (40/40)** | 376 (60/60) | 3532 (20/20) |
-| MTTM   | — (artifact) | 4578 (20/40) | DNC | DNC |
-| IMTTM  | 10 (30/30)\* | 4573 (20/40) | DNC | DNC |
-| SFRBM  | DNC | 1204 (40/40) | DNC | DNC |
-
-`DNC` = no convergence within the budget on a majority of instances.
-`*` MTTM/IMTTM are unusually fast on P1 only through near-trivial feasibility of the
-initialization (MTTM/P1 is excluded as an artifact).
-`P5` is integrated in the codebase and benchmark pipeline; its dedicated tuning and
-comparison pass is tracked separately from the current P1–P4 production table.
-
-Highlights:
-- **AEFBFP wins P3 and P4**, beating the nearest single-call competitor IFRAB on both
-  (P3 by $\sim 2.2\times$; P4 by $\sim 8\%$); on P3 all three proposed methods are
-  faster than every baseline.
-- **EFBFP $\ge$ EPCM** on every problem — the projection–contraction step is empirically
-  removable on this suite.
-- On the well-conditioned **P1** the anchored methods are slow relative to IFRAB; the
-  proposed family is most competitive on structured / harder problems (P3, P4).
-
-## Status
-
-Theory is finalized and independently verified — strong convergence of all three
-methods, with admissibility $\vartheta_0,\mu < 1/\sqrt6$. The numerical study is **in
-progress**: the test suite is being finalized and the manuscript's numerical section is
-being written. The implementation, baselines, test problems, and benchmark pipeline are
-a reusable foundation for monotone-operator-splitting research.
-
-## Requirements
-- Julia 1.10+ (developed on 1.12.6)
-
-## Setup
-```bash
+```powershell
 julia --project=. -e 'import Pkg; Pkg.instantiate()'
+$env:JULIA_NUM_THREADS='1'
+julia --project=. test/runtests.jl
+julia --project=. test/test_cs_protocol.jl
+julia --project=. test/test_oc_protocol.jl
+julia --project=. test/test_saddle_point.jl
+julia --project=. test/test_saddle_runner.jl
 ```
 
-## Running
-```bash
-julia --project=. scripts/s01_smoke_test.jl
+## Production workflows
+
+```powershell
+# Compressed sensing
+julia --project=. scripts/compressed_sensing/s30_benchmark.jl
+julia --project=. scripts/compressed_sensing/s70_tables.jl
+
+# Optimal control
+julia --project=. scripts/optimal_control/double_integrator_control/s30_benchmark.jl
+julia --project=. scripts/optimal_control/double_integrator_control/s70_tables.jl
+julia --project=. scripts/optimal_control/harmonic_oscillator/s30_benchmark.jl
+julia --project=. scripts/optimal_control/harmonic_oscillator/s70_tables.jl
+
+# Matrix games
+julia --project=. scripts/saddle_point/s30_benchmark.jl
+julia --project=. scripts/saddle_point/s60_recompute_gaps.jl
+julia --project=. scripts/saddle_point/s70_tables.jl
 ```
-Numbered scripts: `s01` (smoke), `s10` (one-at-a-time sensitivity), `s11` (PC-stride
-probe), `s20` (Latin-hypercube tuning + promotes the fine-tuned presets), `s28`
-(source-paper baseline validation), `s30` (full benchmark), `s70` (figures & LaTeX
-tables from the `s30` production data).
+
+The `s70_tables.jl` scripts are plot-free. Plotting dependencies are intentionally imported only by the separate Mohammed-run figure entry points:
+
+- `scripts/compressed_sensing/s70_figures_tables.jl`
+- `scripts/optimal_control/double_integrator_control/s70_figures_tables.jl`
+- `scripts/optimal_control/harmonic_oscillator/s70_figures_tables.jl`
+- `scripts/saddle_point/s71_figures.jl`
 
 ## Layout
-- `src/` — solver, problem, and benchmark code (flat-include, no module wrapper)
-- `configs/` — parameter presets (tracked): competitors' source values +
-  the `s20`-generated fine-tuned winners
-- `scripts/` — numbered experiment scripts
-- `results/` — SQLite database, logs, figures (not tracked)
 
-## License
-TBD.
+- `src/`: algorithms, callbacks, projections, database helpers, and reproducibility utilities.
+- `scripts/compressed_sensing/`: four row-orthonormal LASSO recovery cases.
+- `scripts/optimal_control/`: double-integrator and harmonic-oscillator control problems.
+- `scripts/saddle_point/`: three random zero-sum games and one duplicated-identity game with exact anchor diagnostics.
+- `test/`: core, protocol, geometry, and runner tests.
+- `results/`: runtime databases, logs, manifests, tables, and figure destinations (gitignored).
+
+See `CLAUDE.md` and each script-family README for the exact stopping rules and protocol details.

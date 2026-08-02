@@ -682,7 +682,9 @@ the min-rule self-adaptive stepsize. Validates the input constraints
 """
 function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     # ── Parameter validation (manuscript Algorithm 3 input constraints) ──
     (0 < alg.mu < 0.5) ||
@@ -745,16 +747,21 @@ function solve(alg::AEFBFP, prob::TestProblem, x0::Vector{Float64};
             τ_curr + ξ_k
 
         state.x         = x_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = τ_next
 
-        # Residual monitoring (single-call: this B(x_next) is NOT an algorithm eval)
-        Bxnext        = prob.B(x_next)
-        rho           = τ_next
-        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
-        Rn            = norm(x_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        if monitor_residual
+            # This B(x_next) is monitoring only, not an algorithm evaluation.
+            Bxnext        = prob.B(x_next)
+            rho           = τ_next
+            prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+            Rn            = norm(x_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         state.k += 1
         for cb in observers
@@ -983,7 +990,9 @@ Run the viscosity-approximation forward-backward splitting method
 """
 function solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     alg.delta > 0 ||
         throw(ArgumentError("VAFBS: delta must be > 0, got $(alg.delta)"))
@@ -1042,7 +1051,7 @@ function solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
         norm_xy_sq = sum(abs2, diff_xy)
         if norm_xy_sq == 0.0
             state.x               = copy(y_n)
-            state.elapsed         = time() - t0
+            record_elapsed && (state.elapsed = time() - t0)
             state.step_size       = λ_n
             state.residual        = 0.0
             state.scaled_residual = 0.0
@@ -1058,7 +1067,7 @@ function solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
         norm_d_sq = sum(abs2, d_n)
         if norm_d_sq == 0.0
             state.x               = copy(x_n)
-            state.elapsed         = time() - t0
+            record_elapsed && (state.elapsed = time() - t0)
             state.step_size       = λ_n
             state.residual        = 0.0
             state.scaled_residual = 0.0
@@ -1078,16 +1087,21 @@ function solve(alg::VAFBS, prob::TestProblem, x0::Vector{Float64};
         x_next = (α_n * alg.f_scale) .* x_n .+ (1 - α_n) .* z_n
 
         state.x         = x_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = λ_n
 
         # This value is cached as A(x_n) for the next iteration, so it counts.
-        Bxnext        = algorithm_B!(state, prob.B, x_next)
-        rho           = λ_n
-        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
-        Rn            = norm(x_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        Bxnext = algorithm_B!(state, prob.B, x_next)
+        if monitor_residual
+            rho           = λ_n
+            prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+            Rn            = norm(x_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         state.k += 1
         for cb in observers
@@ -1173,7 +1187,9 @@ Returns a `SolverResult`; per-iteration history is captured iff a
 """
 function solve(alg::MDITSM, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     alg.lambda_1 > 0 ||
         throw(ArgumentError("MDITSM: lambda_1 must be > 0, got $(alg.lambda_1)"))
@@ -1248,7 +1264,7 @@ function solve(alg::MDITSM, prob::TestProblem, x0::Vector{Float64};
         norm_Δw = norm(Δw)
         if norm_Δw == 0.0
             state.x               = copy(y_n)
-            state.elapsed         = time() - t0
+            record_elapsed && (state.elapsed = time() - t0)
             state.step_size       = λ_curr
             state.residual        = 0.0
             state.scaled_residual = 0.0
@@ -1269,16 +1285,21 @@ function solve(alg::MDITSM, prob::TestProblem, x0::Vector{Float64};
         x_next     = (1 - θ_n) .* z_n .+ θ_n .* correction
 
         state.x         = x_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = λ_next
 
-        # Diagnostic only: this is intentionally NOT part of F-evals.
-        Bxnext        = prob.B(x_next)
-        rho           = λ_next
-        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
-        Rn            = norm(x_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        if monitor_residual
+            # Diagnostic only: this is intentionally NOT part of F-evals.
+            Bxnext        = prob.B(x_next)
+            rho           = λ_next
+            prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+            Rn            = norm(x_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         state.k += 1
         for cb in observers
@@ -1466,7 +1487,9 @@ end
 
 function solve(alg::RFBSM, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     alg.lambda_0 > 0 ||
         throw(ArgumentError("RFBSM: lambda_0 must be > 0, got $(alg.lambda_0)"))
@@ -1502,15 +1525,20 @@ function solve(alg::RFBSM, prob::TestProblem, x0::Vector{Float64};
         λ_next  = norm_ΔB > 0 ? min(λ_curr, alg.mu * norm(x_curr .- y_n) / norm_ΔB) : λ_curr
 
         state.x         = x_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = λ_next
 
-        Bxnext        = algorithm_B!(state, prob.B, x_next)
-        rho           = λ_next
-        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
-        Rn            = norm(x_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        Bxnext = algorithm_B!(state, prob.B, x_next)
+        if monitor_residual
+            rho           = λ_next
+            prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+            Rn            = norm(x_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         state.k += 1
         for cb in observers
@@ -1577,7 +1605,9 @@ end
 
 function solve(alg::IRFBSM, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     alg.lambda_0 > 0 ||
         throw(ArgumentError("IRFBSM: lambda_0 must be > 0, got $(alg.lambda_0)"))
@@ -1621,16 +1651,21 @@ function solve(alg::IRFBSM, prob::TestProblem, x0::Vector{Float64};
         λ_next  = norm_ΔB > 0 ? min(λ_curr, alg.mu * norm(w_n .- y_n) / norm_ΔB) : λ_curr
 
         state.x         = x_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = λ_next
 
-        # Diagnostic only: this is intentionally NOT part of F-evals.
-        Bxnext        = prob.B(x_next)
-        rho           = λ_next
-        prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
-        Rn            = norm(x_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        if monitor_residual
+            # Diagnostic only: this is intentionally NOT part of F-evals.
+            Bxnext        = prob.B(x_next)
+            rho           = λ_next
+            prox_val      = prob.resolvent_A(x_next .- rho .* Bxnext, rho)
+            Rn            = norm(x_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         state.k += 1
         for cb in observers
@@ -2252,7 +2287,9 @@ Throws `ArgumentError` on violation.
 """
 function solve(alg::IFRAB, prob::TestProblem, x0::Vector{Float64};
                stopping::Tuple,
-               observers::Tuple = ())
+               observers::Tuple = (),
+               monitor_residual::Bool = true,
+               record_elapsed::Bool = true)
 
     # ── Parameter validation (Izuchukwu2023 Alg 4.5 + Thm 4.4) ────────────
     alg.delta_0 > 0 ||
@@ -2324,15 +2361,20 @@ function solve(alg::IFRAB, prob::TestProblem, x0::Vector{Float64};
 
         # ── Update SolverState per the "Solver responsibility" contract ──
         state.x         = w_next
-        state.elapsed   = time() - t0
+        record_elapsed && (state.elapsed = time() - t0)
         state.step_size = δ_next
 
-        # Universal residual at w_{n+1} with ρ = δ_{n+1}, reusing Bw_next.
-        rho           = δ_next
-        prox_val      = prob.resolvent_A(w_next .- rho .* Bw_next, rho)
-        Rn            = norm(w_next .- prox_val)
-        state.residual        = Rn
-        state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        if monitor_residual
+            # Universal residual at w_{n+1}, reusing Bw_next.
+            rho           = δ_next
+            prox_val      = prob.resolvent_A(w_next .- rho .* Bw_next, rho)
+            Rn            = norm(w_next .- prox_val)
+            state.residual        = Rn
+            state.scaled_residual = rho > 0 ? Rn / rho : NaN
+        else
+            state.residual = 0.0
+            state.scaled_residual = 0.0
+        end
 
         # Contract step 6: increment k AFTER the residual block.
         state.k += 1

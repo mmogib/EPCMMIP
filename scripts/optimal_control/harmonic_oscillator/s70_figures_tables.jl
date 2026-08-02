@@ -49,6 +49,10 @@
 
 include(joinpath(@__DIR__, "..", "..", "..", "src", "includes.jl"))
 include(joinpath(@__DIR__, "problem_definition.jl"))
+include(joinpath(@__DIR__, "..", "manuscript_protocol.jl"))
+
+using Plots
+using LaTeXStrings
 
 gr()
 
@@ -66,15 +70,7 @@ const OC_METHOD_TYPES = (AEFBFP, VAFBS, MDITSM, RFBSM, IRFBSM, IFRAB)
 const OC_METHOD_BY_NAME = Dict(name(T) => T for T in OC_METHOD_TYPES)
 const CS_RESULT_ROOT = joinpath(JCODE_ROOT, "results", "compressed_sensing")
 const CS_DB_PATH = joinpath(CS_RESULT_ROOT, "experiments.db")
-const OC_SHARED_AEFBFP_PARAMS = (
-    mu = 0.32475054644276846,
-    tau_0 = 0.052386951978823273,
-    xi_rule = :power,
-    sigma_rule = :power,
-    xi_exp = 1.1090105055152015,
-    sigma_exp = 0.9709015323685187,
-    sigma_scale = 0.02390913974996533,
-)
+const OC_SHARED_AEFBFP_PARAMS = OC_MANUSCRIPT_AEFBFP_PARAMS
 
 const OC_DEFAULT_DIMS = [50, 100, 200]   # full benchmark mesh sizes
 const OC_REF_DIM = 100                   # single representative mesh used for history/figures
@@ -84,6 +80,10 @@ const OC_SEARCH_SEEDS = 5
 const OC_BENCH_INITS = 10
 const OC_EPS_REF = 1.0e-5
 const OC_NMAX_REF = 4000
+const HO_TIME_TICKS = (
+    collect(0.0:pi / 2:3pi),
+    ["0", "π/2", "π", "3π/2", "2π", "5π/2", "3π"],
+)
 
 const OC_WINNER_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tuned_winners (
@@ -263,6 +263,11 @@ function build_algorithm(db, spec, method_name::AbstractString;
 
     T = OC_METHOD_BY_NAME[method_name]
     return T(:paper)
+end
+
+function build_report_algorithm(method_name::AbstractString)
+    method_name == "AEFBFP" && return AEFBFP(; OC_MANUSCRIPT_AEFBFP_PARAMS...)
+    return OC_METHOD_BY_NAME[method_name](:paper)
 end
 
 function make_stopping(prob::TestProblem, eps::Float64, maxiter::Int; consec::Int = 2)
@@ -600,23 +605,12 @@ function print_benchmark_summary(df, tee, dims)
     end
 end
 
-function print_method_parameter_block(tee, db, spec, cfg)
+function print_method_parameter_block(tee)
     println(tee, "  method parameters:")
-    if cfg.aefbfp_preset === nothing
-        println(tee, "    AEFBFP source : shared optimal-control frozen set")
-        println(tee, "    AEFBFP params : $(OC_SHARED_AEFBFP_PARAMS)")
-    else
-        params = AEFBFP_PRESETS[cfg.aefbfp_preset]
-        cfg.aefbfp_round_digits === nothing || (params = round_namedtuple_values(params, cfg.aefbfp_round_digits))
-        println(tee, "    AEFBFP source : preset $(cfg.aefbfp_preset)")
-        println(tee, "    AEFBFP params : $(params)")
-    end
-
+    println(tee, "    AEFBFP source : definitive manuscript set")
+    println(tee, "    AEFBFP params : $(OC_MANUSCRIPT_AEFBFP_PARAMS)")
     for method_name in [name(T) for T in OC_METHOD_TYPES]
-        alg = build_algorithm(db, spec, method_name;
-                              allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
-                              aefbfp_preset = cfg.aefbfp_preset,
-                              aefbfp_round_digits = cfg.aefbfp_round_digits)
+        alg = build_report_algorithm(method_name)
         println(tee, "    $(method_name) config: $(sprint(show, alg))")
     end
     return nothing
@@ -829,6 +823,7 @@ end
 function single_panel_plot(; size = (900, 620))
     return plot(layout = (1, 1),
                 size = size,
+                dpi = 220,
                 background_color = :white,
                 background_color_inside = :white,
                 foreground_color_subplot = :black,
@@ -838,14 +833,16 @@ function single_panel_plot(; size = (900, 620))
                 guidefont = font(12),
                 tickfont = font(10),
                 left_margin = 8Plots.mm,
+                right_margin = 6Plots.mm,
                 bottom_margin = 7Plots.mm,
+                top_margin = 5Plots.mm,
                 gridalpha = 0.18,
                 framestyle = :box)
 end
 
 function save_plot_files(plt, stem::String; png::Bool)
-    savefig(plt, stem * ".pdf")
-    png && savefig(plt, stem * ".png")
+    savefig(deepcopy(plt), stem * ".pdf")
+    png && savefig(deepcopy(plt), stem * ".png")
 end
 
 # ============================================================================
@@ -862,16 +859,10 @@ end
 function solve_reference_run(db, spec; eps::Float64, maxiter::Int,
                              method_name::String = "AEFBFP",
                              dim::Int = OC_REF_DIM,
-                             seed_idx::Int = OC_REF_INIT,
-                             allow_untuned_aefbfp::Bool = false,
-                             aefbfp_preset::Union{Nothing,Symbol} = nothing,
-                             aefbfp_round_digits::Union{Nothing,Int} = nothing)
+                             seed_idx::Int = OC_REF_INIT)
     prob = spec.build_problem(dim; n_inits = OC_BENCH_INITS)
     init = prob.initial_points[seed_idx]
-    alg = build_algorithm(db, spec, method_name;
-                          allow_untuned_aefbfp = allow_untuned_aefbfp,
-                          aefbfp_preset = aefbfp_preset,
-                          aefbfp_round_digits = aefbfp_round_digits)
+    alg = build_report_algorithm(method_name)
     stopping = make_stopping(prob, eps, maxiter; consec = 2)
     hc = HistoryCallback()
     nrec = NativeResRecorder(prob.native_residual)
@@ -912,7 +903,8 @@ end
 # These functions read the stored `history` rows and draw the residual curve.
 
 function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Bool,
-                                  stem::String = "convergence_plot")
+                                  stem::String = "convergence_plot",
+                                  seed_idx::Int = OC_REF_INIT)
     plt = single_panel_plot()
     for method in [name(T) for T in OC_METHOD_TYPES]
         sub = hdf[hdf.method .== method, :]
@@ -926,12 +918,17 @@ function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Boo
               linestyle = :solid,
               marker = :none)
     end
+    hline!(plt, [1.0e-5];
+           label = L"\varepsilon=10^{-5}",
+           color = RGB(0.25, 0.25, 0.25),
+           lw = 1.4,
+           linestyle = :dash)
     plot!(plt;
           xlabel = "Iteration",
           ylabel = L"\mathcal{R}_n",
+          title = "K=$(OC_REF_DIM), start $(seed_idx)",
           yscale = :log10,
-          xlims = (0, 250),
-          ylims = (1.0e-5, 1.0e0),
+          ylims = (1.0e-6, 1.0e0),
           legend = :topright)
     save_plot_files(plt, joinpath(figdir, stem); png = png)
 end
@@ -942,10 +939,7 @@ function build_reference_convergence_rows(tee, db, spec, cfg)
     rows = NamedTuple[]
 
     for method_name in [name(T) for T in OC_METHOD_TYPES]
-        alg = build_algorithm(db, spec, method_name;
-                              allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
-                              aefbfp_preset = cfg.aefbfp_preset,
-                              aefbfp_round_digits = cfg.aefbfp_round_digits)
+        alg = build_report_algorithm(method_name)
         stopping = make_stopping(prob, cfg.eps, cfg.maxiter; consec = 2)
         nhc = NativeResidualHistoryCallback(prob.native_residual)
 
@@ -969,8 +963,6 @@ function build_control_figure(rep, spec, figdir::String; png::Bool,
     switches = (pi / 2, 3pi / 2, 5pi / 2)
     interval_edges = (0.0, switches..., spec.final_time)
     gap = 0.45 * (t[2] - t[1])
-    tick_values = collect(0.0:pi / 2:3pi)
-    tick_labels = ["0", "π/2", "π", "3π/2", "2π", "5π/2", "3π"]
     plt = single_panel_plot()
 
     plot!(plt, t, rep.init.x0;
@@ -995,9 +987,10 @@ function build_control_figure(rep, spec, figdir::String; png::Bool,
     plot!(plt;
           xlabel = L"t",
           ylabel = "Control",
+          title = "K=$(length(rep.result.x)), start $(rep.init.seed_idx)",
           xlims = (0.0, 3pi),
           ylims = (-1.1, 1.1),
-          xticks = (tick_values, tick_labels),
+          xticks = HO_TIME_TICKS,
           legend = :topleft)
     save_plot_files(plt, joinpath(figdir, stem); png = png)
 end
@@ -1023,8 +1016,10 @@ function build_state_figure(rep, spec, figdir::String; png::Bool,
     plot!(plt;
           xlabel = L"t",
           ylabel = "State",
+          title = "K=$(length(rep.result.x)), start $(rep.init.seed_idx)",
           legend = :topleft,
-          xlims = (0.0, spec.final_time))
+          xlims = (0.0, spec.final_time),
+          xticks = HO_TIME_TICKS)
     save_plot_files(plt, joinpath(figdir, stem); png = png)
 end
 
@@ -1043,8 +1038,6 @@ function read_report_config(args)
     ref_maxiter = haskey(opts, "ref-maxiter") ? parse(Int, opts["ref-maxiter"]) : canonical_maxiter(ref_eps)
     ref_seed = haskey(opts, "ref-seed") ? parse(Int, opts["ref-seed"]) : OC_REF_INIT
     png = "png" in flags
-    aefbfp_preset = haskey(opts, "aefbfp-preset") ? parse_symbol_option(opts["aefbfp-preset"]) : nothing
-    aefbfp_round_digits = haskey(opts, "aefbfp-round-digits") ? parse(Int, opts["aefbfp-round-digits"]) : nothing
     1 <= ref_seed <= OC_BENCH_INITS || throw(ArgumentError("ref-seed must be between 1 and $(OC_BENCH_INITS), got $ref_seed"))
     return (
         quick = quick,
@@ -1055,9 +1048,6 @@ function read_report_config(args)
         ref_seed = ref_seed,
         png = png,
         production = !quick,
-        allow_untuned_aefbfp = "allow-untuned-aefbfp" in flags,
-        aefbfp_preset = aefbfp_preset,
-        aefbfp_round_digits = aefbfp_round_digits,
     )
 end
 
@@ -1081,7 +1071,7 @@ function print_report_banner(tee, db, spec, cfg, df)
     println(tee, "  png         : $(cfg.png)")
     println(tee, "  rows        : $(nrow(df))")
     println(tee, "  output dir  : $(local_figdir(spec))")
-    print_method_parameter_block(tee, db, spec, cfg)
+    print_method_parameter_block(tee)
     return nothing
 end
 
@@ -1102,7 +1092,8 @@ function write_report_convergence(tee, db, spec, cfg)
     end
 
     stem = "ho_convergence"
-    build_convergence_figure(hdf, spec, local_figdir(spec); png = cfg.png, stem = stem)
+    build_convergence_figure(hdf, spec, local_figdir(spec);
+                             png = cfg.png, stem = stem, seed_idx = cfg.ref_seed)
     println(tee, "wrote $(stem).pdf")
     return nothing
 end
@@ -1114,10 +1105,7 @@ function write_report_reference_figures(tee, db, spec, cfg)
                               maxiter = cfg.ref_maxiter,
                               method_name = "AEFBFP",
                               dim = OC_REF_DIM,
-                              seed_idx = cfg.ref_seed,
-                              allow_untuned_aefbfp = cfg.allow_untuned_aefbfp,
-                              aefbfp_preset = cfg.aefbfp_preset,
-                              aefbfp_round_digits = cfg.aefbfp_round_digits)
+                              seed_idx = cfg.ref_seed)
     control_stem = "ho_control"
     state_stem = "ho_state"
     build_control_figure(rep, spec, local_figdir(spec); png = cfg.png, stem = control_stem)

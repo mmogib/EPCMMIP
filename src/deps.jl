@@ -23,9 +23,9 @@ using JSON3
 using DataFrames
 using CSV
 
-# Figure support
-using Plots
-using LaTeXStrings
+# Plotting packages are intentionally NOT loaded by the shared numerical entry
+# point.  Plot-only s70/s71 scripts import Plots/LaTeXStrings locally and are
+# run by Mohammed; benchmark, table, and smoke-test drivers must stay plot-free.
 
 # Progress bars
 using ProgressMeter

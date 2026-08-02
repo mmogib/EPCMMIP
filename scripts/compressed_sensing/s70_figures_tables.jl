@@ -34,6 +34,9 @@
 
 include(joinpath(@__DIR__, "s30_benchmark.jl"))
 
+using Plots
+using LaTeXStrings
+
 gr()
 
 const DEFAULT_CONVERGENCE_CASES = [DEFAULT_CASES[1].problem, DEFAULT_CASES[end].problem]
@@ -83,20 +86,13 @@ function read_report_config(args)
     production = !("quick" in flags)
     eps = haskey(opts, "eps") ? parse(Float64, opts["eps"]) : REPORT_EPS_DEFAULT
     maxiter = haskey(opts, "maxiter") ? parse(Int, opts["maxiter"]) : canonical_maxiter(eps)
-    snr_db = haskey(opts, "snr-db") ? parse(Float64, opts["snr-db"]) : SNR_DB_REF
     convergence_cases = haskey(opts, "convergence-cases") ? parse_case_list(opts["convergence-cases"]) : DEFAULT_CONVERGENCE_CASES
     signal_case = haskey(opts, "signal-case") ? only(parse_case_list(opts["signal-case"])) : DEFAULT_SIGNAL_CASE
-    aefbfp_preset = haskey(opts, "aefbfp-preset") ? parse_symbol_option(opts["aefbfp-preset"]) : nothing
-    aefbfp_round_digits = haskey(opts, "aefbfp-round-digits") ? parse(Int, opts["aefbfp-round-digits"]) : nothing
 
     for fig in figures
         fig in ("convergence", "resolvent_convergence", "signal_panels") ||
             throw(ArgumentError("Unsupported figure key '$fig'"))
     end
-    aefbfp_preset === nothing || haskey(AEFBFP_PRESETS, aefbfp_preset) ||
-        throw(ArgumentError("Unknown AEFBFP preset :$(aefbfp_preset). Known: $(join(sort(collect(keys(AEFBFP_PRESETS))), ", "))"))
-    aefbfp_round_digits === nothing || aefbfp_round_digits >= 0 ||
-        throw(ArgumentError("aefbfp-round-digits must be >= 0, got $(aefbfp_round_digits)"))
 
     return (
         figures = figures,
@@ -104,11 +100,8 @@ function read_report_config(args)
         production = production,
         eps = eps,
         maxiter = maxiter,
-        snr_db = snr_db,
         convergence_cases = convergence_cases,
         signal_case = signal_case,
-        aefbfp_preset = aefbfp_preset,
-        aefbfp_round_digits = aefbfp_round_digits,
     )
 end
 
@@ -255,7 +248,7 @@ function write_summary_table_tex(df, path::String)
         println(io, "\\end{table}\n")
 
         println(io, "\\begin{table}[H]\\centering")
-        println(io, "\\caption{Compressed-sensing final accuracy at the common LASSO optimality-residual stopping rule. For every case, the columns show the median final objective, reconstruction MSE, and common optimality residual over converged starts.}\\label{tab:cs_accuracy}")
+        println(io, "\\caption{Compressed-sensing terminal accuracy at successive-displacement stopping. For every case, the columns show the median final objective, reconstruction MSE, and common optimality residual over converged starts. The common residual is a terminal diagnostic, not the stopping rule.}\\label{tab:cs_accuracy}")
         println(io, "\\begin{tabular}{l" * repeat("rrr", length(DEFAULT_CASES)) * "}")
         println(io, "\\toprule")
         header_top = ["Method"]
@@ -346,30 +339,22 @@ end
 
 # Solve one stored case/method pair again so the plotting script can rebuild
 # the convergence curve and final recovered signal from a chosen dataset.
-function build_plot_algorithm(db, method::String; aefbfp_preset::Union{Nothing,Symbol} = nothing,
-                              aefbfp_round_digits::Union{Nothing,Int} = nothing)
-    return build_algorithm(db, method;
-                           allow_untuned_aefbfp = false,
-                           aefbfp_preset = aefbfp_preset,
-                           aefbfp_round_digits = aefbfp_round_digits)
+function build_plot_algorithm(db, method::String)
+    return build_algorithm(db, method)
 end
 
-function build_resolvent_plot_algorithm(db, method::String; aefbfp_preset::Union{Nothing,Symbol} = nothing,
-                                        aefbfp_round_digits::Union{Nothing,Int} = nothing)
-    method in RESOLVENT_METHOD_NAMES &&
-        return build_plot_algorithm(db, method; aefbfp_preset = aefbfp_preset, aefbfp_round_digits = aefbfp_round_digits)
+function build_resolvent_plot_algorithm(db, method::String)
+    method in RESOLVENT_METHOD_NAMES && return build_plot_algorithm(db, method)
     throw(ArgumentError("Unsupported resolvent plot method '$method'"))
 end
 
 function solve_representative_case(db, case_id::String, method::String; eps::Float64, maxiter::Int, dataset_idx::Int,
-                                   gamma::Float64 = GAMMA_REF, snr_db::Float64 = SNR_DB_REF, consec::Int = 2,
-                                   algorithm_builder::Function = build_plot_algorithm,
-                                   aefbfp_preset::Union{Nothing,Symbol} = nothing,
-                                   aefbfp_round_digits::Union{Nothing,Int} = nothing)
-    case = CASE_BY_NAME[case_id]
-    prob = build_problem(case; gamma = gamma, snr_db = snr_db, data_seed = dataset_seed(case, dataset_idx))
-    init = prob.initial_points[1]
-    alg = algorithm_builder(db, method; aefbfp_preset = aefbfp_preset, aefbfp_round_digits = aefbfp_round_digits)
+                                   gamma::Float64 = GAMMA_REF, consec::Int = 2,
+                                   algorithm_builder::Function = build_plot_algorithm)
+    selected = manuscript_problem_start(case_id, dataset_idx; gamma = gamma)
+    prob = selected.prob
+    init = selected.init
+    alg = algorithm_builder(db, method)
     stopping = make_stopping(prob, eps, maxiter; consec = consec)
     hc = HistoryCallback()
     nhc = NativeResidualHistoryCallback(prob.native_residual)
@@ -395,14 +380,14 @@ resolvent_residual_series(history) = [0.5 * max(rec.residual, 0.0)^2 for rec in 
 function save_plot_files(plt, stem::String, tee; png::Bool)
     pdf_path = stem * ".pdf"
     try
-        savefig(plt, pdf_path)
+        savefig(deepcopy(plt), pdf_path)
         println(tee, "  wrote $(pdf_path)")
     catch err
         println(tee, "  warning: could not write $(pdf_path) ($(sprint(showerror, err)))")
     end
     if png
         png_path = stem * ".png"
-        savefig(plt, png_path)
+        savefig(deepcopy(plt), png_path)
         println(tee, "  wrote $(png_path)")
     end
     return nothing
@@ -421,7 +406,7 @@ function resolvent_convergence_output_stem(case_id::String)
 end
 
 function case_title_with_capital_k(case)
-    return "M=$(case.M), N=$(case.N), K=$(case.k)"
+    return "M=$(case.M), N=$(case.N), k=$(case.k)"
 end
 
 # ============================================================================
@@ -475,10 +460,7 @@ function build_convergence_figures(db, df, cfg, tee)
             rep = solve_representative_case(db, case_id, method;
                                             eps = cfg.eps,
                                             maxiter = cfg.maxiter,
-                                            snr_db = cfg.snr_db,
-                                            dataset_idx = dataset_idx,
-                                            aefbfp_preset = cfg.aefbfp_preset,
-                                            aefbfp_round_digits = cfg.aefbfp_round_digits)
+                                            dataset_idx = dataset_idx)
             ks = rep.native_history_k
             ts = rep.native_history_elapsed
             rs = [max(v, 1.0e-12) for v in rep.native_history]
@@ -558,11 +540,8 @@ function build_resolvent_convergence_figures(db, df, cfg, tee)
             rep = solve_representative_case(db, case_id, method;
                                             eps = cfg.eps,
                                             maxiter = cfg.maxiter,
-                                            snr_db = cfg.snr_db,
                                             dataset_idx = dataset_idx,
-                                            algorithm_builder = build_resolvent_plot_algorithm,
-                                            aefbfp_preset = cfg.aefbfp_preset,
-                                            aefbfp_round_digits = cfg.aefbfp_round_digits)
+                                            algorithm_builder = build_resolvent_plot_algorithm)
             ks = [rec.k for rec in rep.history]
             rs = [max(v, 1.0e-16) for v in resolvent_residual_series(rep.history)]
             isempty(ks) || (max_k = max(max_k, maximum(ks)))
@@ -653,10 +632,7 @@ function build_signal_panels_figure(db, df, cfg, tee)
         reps[method] = solve_representative_case(db, case_id, method;
                                                  eps = cfg.eps,
                                                  maxiter = cfg.maxiter,
-                                                 snr_db = cfg.snr_db,
-                                                 dataset_idx = dataset_idx,
-                                                 aefbfp_preset = cfg.aefbfp_preset,
-                                                 aefbfp_round_digits = cfg.aefbfp_round_digits)
+                                                 dataset_idx = dataset_idx)
     end
 
     ref_method = "AEFBFP"
@@ -667,10 +643,10 @@ function build_signal_panels_figure(db, df, cfg, tee)
     plt = plot(layout = (2 + length(methods), 1), size = (1180, 260 * (2 + length(methods))))
 
     plot_spike_panel!(plt[1], prob.metadata.x_star,
-                      "(a) Original signal | $(case_title_with_capital_k(case))";
+                      "(a) Original signal | $(case_title_with_capital_k(case)) | start $(dataset_idx)";
                       color = styles[ref_method].color, ylabel = "Amplitude")
     plot_measurement_panel!(plt[2], prob.metadata.y,
-                            "(b) Noisy measurements | y = Ax* + ε, ε ~ N(0, 10⁻⁴I)")
+                            "(b) Noisy measurements | y = Cx* + ε, ε ~ N(0, 10⁻⁴I)")
 
     letters = collect('c':'z')
     for (panel_idx, method, letter) in zip(3:(2 + length(methods)), methods, letters)
@@ -695,20 +671,14 @@ function report_main(args = ARGS)
     db = open_db(DB_PATH)
     try
         figures_label = isempty(cfg.figures) ? "(tables only)" : join(cfg.figures, ", ")
-        aefbfp_label = cfg.aefbfp_preset === nothing ? "(tuned winner for re-solves)" : string(cfg.aefbfp_preset)
-        aefbfp_round_label = cfg.aefbfp_round_digits === nothing ? "(full precision)" : string(cfg.aefbfp_round_digits)
-        aefbfp_params = resolved_aefbfp_params(db;
-                                               aefbfp_preset = cfg.aefbfp_preset,
-                                               round_digits = cfg.aefbfp_round_digits)
         println(tee, "="^78)
         println(tee, "  Figures/tables: $(PROBLEM_NAME)")
         println(tee, "="^78)
         println(tee, "  db_path    : $(DB_PATH)")
         println(tee, "  figure_dir : $(FIGDIR)")
         println(tee, "  figures    : $(figures_label)")
-        println(tee, "  aefbfp_preset : $(aefbfp_label)")
-        println(tee, "  aefbfp_round_digits : $(aefbfp_round_label)")
-        println(tee, "  aefbfp_params : $(aefbfp_params)")
+        println(tee, "  protocol   : manuscript_v1")
+        println(tee, "  aefbfp_params : $(MANUSCRIPT_AEFBFP_PARAMS)")
         println(tee)
 
         df = load_table_rows(db, cfg)

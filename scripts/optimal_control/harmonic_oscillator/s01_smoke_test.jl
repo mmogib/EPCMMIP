@@ -1,8 +1,6 @@
 include(joinpath(@__DIR__, "..", "..", "..", "src", "includes.jl"))
 include(joinpath(@__DIR__, "problem_definition.jl"))
 
-gr()
-
 const OC_METHOD_TYPES = (AEFBFP, VAFBS, MDITSM, RFBSM, IRFBSM, IFRAB)
 const OC_METHOD_BY_NAME = Dict(name(T) => T for T in OC_METHOD_TYPES)
 const CS_RESULT_ROOT = joinpath(JCODE_ROOT, "results", "compressed_sensing")
@@ -29,25 +27,25 @@ CREATE TABLE IF NOT EXISTS tuned_winners (
 """
 
 const OC_CONVERGENCE_STYLES = Dict(
-    "AEFBFP" => (color = RGB(0.0, 0.6056031704619725, 0.9786801190138923), lw = 1.8),
-    "VAFBS"  => (color = RGB(0.8888735440600661, 0.4356491485063990, 0.2781230452972764), lw = 1.8),
-    "MDITSM" => (color = RGB(0.2422239333391190, 0.6432750821113586, 0.3044486641883850), lw = 1.8),
-    "RFBSM"  => (color = RGB(0.7644400000572205, 0.4441117644309998, 0.8242975473403931), lw = 1.8),
-    "IRFBSM" => (color = RGB(0.6755439043045044, 0.5556622147560120, 0.0942344442009926), lw = 1.8),
-    "IFRAB"  => (color = RGB(0.0, 0.6657590270042419, 0.6809969544410706), lw = 1.8),
+    "AEFBFP" => (color = "#009AF9", lw = 1.8),
+    "VAFBS"  => (color = "#E26F46", lw = 1.8),
+    "MDITSM" => (color = "#3DA44D", lw = 1.8),
+    "RFBSM"  => (color = "#C77CFF", lw = 1.8),
+    "IRFBSM" => (color = "#AC8D18", lw = 1.8),
+    "IFRAB"  => (color = "#00A9AD", lw = 1.8),
 )
 
 const OC_CONTROL_STYLES = (
-    initial = (color = RGB(0.0, 0.6056, 0.9787), lw = 1.8, linestyle = :solid),
-    computed = (color = RGB(0.8889, 0.4356, 0.2781), lw = 1.8, linestyle = :solid),
-    exact = (color = RGB(0.2422, 0.6433, 0.3044), lw = 1.8, linestyle = :dash),
+    initial = (color = "#009AF9", lw = 1.8, linestyle = :solid),
+    computed = (color = "#E26F46", lw = 1.8, linestyle = :solid),
+    exact = (color = "#3DA44D", lw = 1.8, linestyle = :dash),
 )
 
 const OC_STATE_STYLES = (
-    comp1 = (color = RGB(0.0, 0.6056, 0.9787), lw = 1.8, linestyle = :solid),
-    comp2 = (color = RGB(0.8889, 0.4356, 0.2781), lw = 1.8, linestyle = :solid),
-    exact1 = (color = RGB(0.2422, 0.6433, 0.3044), lw = 1.8, linestyle = :dash),
-    exact2 = (color = RGB(0.7644, 0.4441, 0.8243), lw = 1.8, linestyle = :dash),
+    comp1 = (color = "#009AF9", lw = 1.8, linestyle = :solid),
+    comp2 = (color = "#E26F46", lw = 1.8, linestyle = :solid),
+    exact1 = (color = "#3DA44D", lw = 1.8, linestyle = :dash),
+    exact2 = (color = "#C77CFF", lw = 1.8, linestyle = :dash),
 )
 
 function parse_cli(args)
@@ -752,7 +750,7 @@ function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Boo
     for method in [name(T) for T in OC_METHOD_TYPES]
         sub = hdf[hdf.method .== method, :]
         nrow(sub) == 0 && continue
-        sty = get(OC_CONVERGENCE_STYLES, method, (color = RGB(0.35, 0.35, 0.35), lw = 1.8))
+        sty = get(OC_CONVERGENCE_STYLES, method, (color = "#595959", lw = 1.8))
         vals = max.(Float64.(sub.residual), 1.0e-16)
         plot!(plt, Int.(sub.k), vals;
               label = method,
@@ -763,7 +761,7 @@ function build_convergence_figure(hdf::DataFrame, spec, figdir::String; png::Boo
     end
     plot!(plt;
           xlabel = "Iter",
-          ylabel = L"\mathcal{R}_n",
+          ylabel = "R_n",
           yscale = :log10,
           xlims = (0, 250),
           ylims = (1.0e-5, 1.0e0),

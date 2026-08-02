@@ -1,52 +1,35 @@
-# Optimal Control Benchmarks
+# Optimal-control benchmarks
 
-This folder now mirrors the compressed-sensing workflow.
-
-## Per-problem folders
+The two self-contained studies are:
 
 - `double_integrator_control/`
 - `harmonic_oscillator/`
 
-Each folder is self-contained and contains its own:
+Each uses mesh sizes `K=50,100,200` and ten independently seeded starts. The stopping quantity is
 
-- problem builder
-- local benchmark/report helpers
-- local benchmark DB helpers
-- AEFBFP tuning support
-- benchmark runner
-- figure and table builder
-- `s01_smoke_test.jl`
-- `s20_aefbfp_parameter_search.jl`
-- `s30_benchmark.jl`
-- `s70_figures_tables.jl`
+`R_n = 0.5 * norm(z_n - J^A_1(z_n - B(z_n)))^2`,
 
-Current layout:
+with tolerance `10^-5`, two consecutive hits, and a cap of 4000 iterations. Every production cell has two warm-ups and three measured repetitions; the runner asserts identical flag/iteration/evaluation signatures and records median CPU time.
 
-- `double_integrator_control/`: standalone `s01`, `s20`, `s30`, and `s70` files
-- `harmonic_oscillator/`: standalone `s01`, `s20`, `s30`, and `s70` files
+## Run
 
-The `s20` files are informational only in the optimal-control folders:
+From `jcode/`, with Julia and BLAS restricted to one thread:
 
-- no local AEFBFP tuning is run here
-- AEFBFP uses the fixed preset chosen for the optimal-control benchmarks
-- the actual paper workflow is `s01 -> s30 -> s70`
+```powershell
+julia --project=. scripts/optimal_control/double_integrator_control/s01_smoke_test.jl
+julia --project=. scripts/optimal_control/double_integrator_control/s30_benchmark.jl
+julia --project=. scripts/optimal_control/double_integrator_control/s70_tables.jl
 
-## Canonical benchmark design
+julia --project=. scripts/optimal_control/harmonic_oscillator/s01_smoke_test.jl
+julia --project=. scripts/optimal_control/harmonic_oscillator/s30_benchmark.jl
+julia --project=. scripts/optimal_control/harmonic_oscillator/s70_tables.jl
+```
 
-- methods: `AEFBFP`, `VAFBS`, `MDITSM`, `RFBSM`, `IRFBSM`, `IFRAB`
-- `AEFBFP` parameters: taken from the fixed optimal-control preset
-- mesh sizes: `K = 50, 100, 200`
-- starts per mesh: `10`
-- stopping quantity: `R_n = 0.5 * ||z_n - J_A(z_n - B(z_n))||^2`
-- tolerance: `1e-5`
-- consecutive hits: `2`
-- max iterations: `4000`
-- representative figure run: `K = 100`, `seed 1`
+The `s70_tables.jl` files are pure table generators. Mohammed-only plotting entry points are:
 
-## Outputs
+```powershell
+julia --project=. scripts/optimal_control/double_integrator_control/s70_figures_tables.jl
+julia --project=. scripts/optimal_control/harmonic_oscillator/s70_figures_tables.jl
+```
 
-Each problem now writes under the shared optimal-control result root:
-
-- `results/optimal_control/<problem>/experiments.db`
-- `results/optimal_control/<problem>/logs/`
-- `results/optimal_control/<problem>/figures/`
+Each problem writes `experiments.db`, logs, JSON manifests, tables, and figure destinations below `results/optimal_control/<problem>/`.
